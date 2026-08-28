@@ -121,6 +121,10 @@ function AuthRoute() {
           <p className="mt-2 text-sm text-muted-foreground">
             Use an account so emergency actions can be attributed and tracked.
           </p>
+          <p className="mt-3 rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs text-muted-foreground">
+            This device can remember your secure Supabase session for your next visit. Sentinel
+            never stores or reads your password.
+          </p>
           <form onSubmit={submit} className="mt-6 space-y-4">
             {mode === "sign-up" && (
               <Field label="Name">

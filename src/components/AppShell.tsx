@@ -40,7 +40,10 @@ export function ConnectionStatus() {
       <span className={cn("h-2.5 w-2.5 rounded-full", state.dot)} aria-hidden />
       <span className="font-semibold">{state.text}</span>
       {queue.length > 0 && (
-        <Link to="/my-sos" className="rounded border border-accent/50 bg-accent/15 px-1.5 py-0.5 text-accent">
+        <Link
+          to="/my-sos"
+          className="rounded border border-accent/50 bg-accent/15 px-1.5 py-0.5 text-accent"
+        >
           {queue.length} waiting to transmit
         </Link>
       )}
@@ -53,7 +56,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const connection = useConnection();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
 
-  const items = NAV.filter((item) => (!item.operatorOnly || isOperator) && (!item.adminOnly || isAdmin));
+  const items = NAV.filter(
+    (item) => (!item.operatorOnly || isOperator) && (!item.adminOnly || isAdmin),
+  ).filter((item, index, all) => all.findIndex((candidate) => candidate.to === item.to) === index);
   const mobileItems = items.slice(0, 5);
 
   return (
@@ -69,7 +74,9 @@ export function AppShell({ children }: { children: ReactNode }) {
       <aside className="sticky top-0 hidden h-screen w-60 shrink-0 flex-col border-r border-border bg-surface/60 p-4 lg:flex">
         <Link to="/" className="mb-6 block">
           <p className="font-display text-lg font-bold tracking-tight">SENTINEL</p>
-          <p className="text-[11px] tracking-[0.18em] text-muted-foreground uppercase">Predict · Alert · Respond</p>
+          <p className="text-[11px] tracking-[0.18em] text-muted-foreground uppercase">
+            Predict · Alert · Respond
+          </p>
         </Link>
         <nav className="flex flex-1 flex-col gap-1" aria-label="Main">
           {items.map((item) => (
@@ -122,13 +129,19 @@ export function AppShell({ children }: { children: ReactNode }) {
         </header>
 
         {connection === "OFFLINE" && (
-          <div role="status" className="border-b border-accent/40 bg-accent/15 px-4 py-2 text-xs text-accent">
-            OFFLINE MODE — showing last known information. Emergency requests are stored on this device and retried
-            automatically.
+          <div
+            role="status"
+            className="border-b border-accent/40 bg-accent/15 px-4 py-2 text-xs text-accent"
+          >
+            OFFLINE MODE — showing last known information. Emergency requests are stored on this
+            device and retried automatically.
           </div>
         )}
 
-        <main id="main" className="mx-auto w-full max-w-[1600px] flex-1 px-3 pt-4 pb-28 sm:px-5 lg:pb-8">
+        <main
+          id="main"
+          className="mx-auto w-full max-w-[1600px] flex-1 px-3 pt-4 pb-28 sm:px-5 lg:pb-8"
+        >
           {children}
         </main>
 

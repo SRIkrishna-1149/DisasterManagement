@@ -137,7 +137,12 @@ function MySosContent() {
     () =>
       queue.map((item) => ({
         item,
-        label: item.kind === "SOS" ? "Emergency SOS" : "Emergency update",
+        label:
+          item.kind === "SOS"
+            ? "Emergency SOS"
+            : item.kind === "RESPONDER_NOTIFICATION"
+              ? "Responder email delivery"
+              : "Emergency update",
       })),
     [queue],
   );
@@ -368,6 +373,11 @@ function MySosContent() {
                   {selected.validation_notes && (
                     <p className="border-t border-border pt-3 text-sm text-muted-foreground">
                       Responder note: {selected.validation_notes}
+                    </p>
+                  )}
+                  {selected.validated_at && (
+                    <p className="mt-3 border-t border-border pt-3 text-sm font-semibold text-safe">
+                      Request accepted by the response team · {localTime(selected.validated_at)}
                     </p>
                   )}
                 </Panel>

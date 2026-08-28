@@ -66,6 +66,24 @@ const ACTIVE_STATUSES: SosStatusValue[] = [
   "RESCUE_IN_PROGRESS",
 ];
 
+async function enqueueResponderNotification(
+  sosId: string,
+  operationId: string,
+  userId: unknown,
+  severity: Severity | undefined,
+): Promise<void> {
+  await enqueue({
+    id: `notify:${operationId}`,
+    kind: "RESPONDER_NOTIFICATION",
+    priority: priorityFor("RESPONDER_NOTIFICATION", severity ?? "HIGH"),
+    payload: { sos_id: sosId, operation_id: operationId, user_id: userId },
+    state: "QUEUED",
+    attempts: 0,
+    nextAttemptAt: Date.now(),
+    createdAt: new Date().toISOString(),
+  });
+}
+
 /** Client-side pre-check. The database unique idempotency key is the real guard. */
 export async function findActiveSos(userId: string): Promise<SosRow[]> {
   const { data, error } = await supabase
@@ -110,6 +128,10 @@ export async function submitSos(draft: SosDraft, userId: string): Promise<Queued
   };
   await enqueue(op);
   await flushQueue();
+  // The first pass persists the SOS and creates a separate notification
+  // operation. A second pass can transmit that notification immediately while
+  // keeping SOS creation idempotent if the mail provider is unavailable.
+  await flushQueue();
   const [updated] = (await listQueue()).filter((q) => q.id === op.id);
   return updated ?? op;
 }
@@ -129,27 +151,56 @@ async function transmit(op: QueuedOperation): Promise<void> {
     if (error) {
       // Unique violation means the server already accepted this exact request.
       if (error.code === "23505") {
+        const { data: existing } = await supabase
+          .from("sos_requests")
+          .select("id")
+          .eq("idempotency_key", op.id)
+          .maybeSingle();
+        if (existing) {
+          await enqueueResponderNotification(
+            existing.id,
+            op.id,
+            op.payload["user_id"],
+            op.payload["severity"] as Severity | undefined,
+          );
+        }
         await removeOperation(op.id);
         return;
       }
       throw error;
     }
     await updateOperation(op.id, { state: "TRANSMITTED", serverId: data.id });
+    await enqueueResponderNotification(
+      data.id,
+      op.id,
+      op.payload["user_id"],
+      op.payload["severity"] as Severity | undefined,
+    );
+    await removeOperation(op.id);
+    return;
+  }
+
+  if (op.kind === "RESPONDER_NOTIFICATION") {
+    const { error } = await supabase.functions.invoke("notify-rescue", {
+      body: op.payload,
+    });
+    if (error) throw error;
     await removeOperation(op.id);
     return;
   }
 
   if (op.kind === "SOS_UPDATE") {
     const { sos_id, ...patch } = op.payload as { sos_id: string } & Record<string, unknown>;
-    const { error } = await supabase.from("sos_requests").update(patch as never).eq("id", sos_id);
+    const { error } = await supabase
+      .from("sos_requests")
+      .update(patch as never)
+      .eq("id", sos_id);
     if (error) throw error;
     await removeOperation(op.id);
     return;
   }
 
-  const { error } = await supabase
-    .from("community_reports")
-    .insert(op.payload as never);
+  const { error } = await supabase.from("community_reports").insert(op.payload as never);
   if (error) throw error;
   await removeOperation(op.id);
 }

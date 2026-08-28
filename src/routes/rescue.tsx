@@ -155,8 +155,8 @@ function RescueContent() {
   async function validate(next: "VALIDATED" | "NEEDS_MORE_INFORMATION" | "REJECTED") {
     await transition(next, {
       validation_notes: notes.trim() || null,
-      validated_by: user?.id ?? null,
-      validated_at: new Date().toISOString(),
+      validated_by: next === "VALIDATED" ? (user?.id ?? null) : null,
+      validated_at: next === "VALIDATED" ? new Date().toISOString() : null,
     });
   }
   async function assign() {

@@ -20,11 +20,13 @@ import {
   StatusPill,
 } from "@/components/kit";
 import { OperationsMap, type MapMarker } from "@/components/map-panel";
+import { QuickSosDialog } from "@/components/quick-sos";
 import { useAuth } from "@/hooks/useAuth";
 import { FEATURE_FLAGS, localTime } from "@/lib/domain";
 import type { Tables } from "@/integrations/supabase/types";
 import { ruleBasedEngine, simulatedReading } from "@/lib/risk-engine";
 import { supabase } from "@/integrations/supabase/client";
+import { useState } from "react";
 
 type AlertRow = Tables<"alerts">;
 type SosRow = Tables<"sos_requests">;
@@ -34,6 +36,7 @@ export const Route = createFileRoute("/")({ component: HomeRoute });
 
 function HomeRoute() {
   const { user } = useAuth();
+  const [quickSosOpen, setQuickSosOpen] = useState(false);
   const alerts = useQuery({
     queryKey: ["home-alerts"],
     queryFn: async () => {
@@ -137,12 +140,14 @@ function HomeRoute() {
               responders—even when connectivity is unreliable.
             </p>
             <div className="mt-6 flex flex-wrap gap-3">
-              <Link to="/sos">
-                <button className="inline-flex min-h-13 items-center gap-2 rounded-lg bg-destructive px-5 text-base font-bold text-destructive-foreground shadow-lg shadow-destructive/15 hover:brightness-110">
-                  <Siren className="h-5 w-5" />
-                  Send emergency SOS
-                </button>
-              </Link>
+              <button
+                type="button"
+                onClick={() => setQuickSosOpen(true)}
+                className="inline-flex min-h-13 items-center gap-2 rounded-lg bg-destructive px-5 text-base font-bold text-destructive-foreground shadow-lg shadow-destructive/15 hover:brightness-110"
+              >
+                <Siren className="h-5 w-5" />
+                Send emergency SOS
+              </button>
               <Link to="/resources">
                 <button className="inline-flex min-h-13 items-center gap-2 rounded-lg border border-border bg-surface px-5 text-sm font-semibold hover:bg-surface-2">
                   Find shelter or hospital <ArrowUpRight className="h-4 w-4" />
@@ -349,6 +354,7 @@ function HomeRoute() {
           </Panel>
         </section>
       </div>
+      {quickSosOpen && <QuickSosDialog onClose={() => setQuickSosOpen(false)} />}
     </AppShell>
   );
 }

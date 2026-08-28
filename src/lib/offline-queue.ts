@@ -4,7 +4,7 @@
  */
 import type { Severity, TransmissionState } from "./domain";
 
-export type QueueKind = "SOS" | "SOS_UPDATE" | "COMMUNITY_REPORT";
+export type QueueKind = "SOS" | "RESPONDER_NOTIFICATION" | "SOS_UPDATE" | "COMMUNITY_REPORT";
 
 export interface QueuedOperation {
   id: string; // idempotency key — server deduplicates on this
@@ -40,7 +40,11 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-async function tx<T>(store: string, mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest): Promise<T> {
+async function tx<T>(
+  store: string,
+  mode: IDBTransactionMode,
+  fn: (s: IDBObjectStore) => IDBRequest,
+): Promise<T> {
   const db = await openDb();
   return new Promise<T>((resolve, reject) => {
     const request = fn(db.transaction(store, mode).objectStore(store));
@@ -51,6 +55,7 @@ async function tx<T>(store: string, mode: IDBTransactionMode, fn: (s: IDBObjectS
 
 export function priorityFor(kind: QueueKind, severity?: Severity): number {
   if (kind === "SOS") return severity === "CRITICAL" ? 0 : 1;
+  if (kind === "RESPONDER_NOTIFICATION") return severity === "CRITICAL" ? 0 : 1;
   if (kind === "SOS_UPDATE") return 2;
   return 3;
 }
@@ -88,7 +93,11 @@ export async function cacheSet(key: string, value: unknown): Promise<void> {
 
 export async function cacheGet<T>(key: string): Promise<{ value: T; cachedAt: number } | null> {
   if (!isBrowser()) return null;
-  const result = await tx<{ value: T; cachedAt: number } | undefined>(CACHE_STORE, "readonly", (s) => s.get(key));
+  const result = await tx<{ value: T; cachedAt: number } | undefined>(
+    CACHE_STORE,
+    "readonly",
+    (s) => s.get(key),
+  );
   return result ?? null;
 }
 
