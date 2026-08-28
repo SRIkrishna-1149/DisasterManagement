@@ -1,0 +1,18 @@
+{
+  "name": "Sentinel Emergency Response",
+  "short_name": "Sentinel",
+  "description": "Predict, alert, and respond to local emergencies.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#12232a",
+  "theme_color": "#12232a",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/favicon.ico",
+      "sizes": "32x32",
+      "type": "image/x-icon",
+      "purpose": "any"
+    }
+  ]
+}
