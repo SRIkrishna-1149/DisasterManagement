@@ -12,7 +12,9 @@ import {
   updateOperation,
   type QueuedOperation,
 } from "./offline-queue";
-import type { LocationSource, Severity } from "./domain";
+import type { LocationSource, Severity, SosStatus } from "./domain";
+
+type SosStatusValue = SosStatus;
 import { haversineKm } from "./geo";
 
 export interface SosDraft {
@@ -53,7 +55,7 @@ export function newIdempotencyKey(): string {
     : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
-const ACTIVE_STATUSES = [
+const ACTIVE_STATUSES: SosStatusValue[] = [
   "UNVERIFIED",
   "NEEDS_MORE_INFORMATION",
   "VALIDATED",
@@ -117,10 +119,10 @@ async function transmit(op: QueuedOperation): Promise<void> {
     const { data, error } = await supabase
       .from("sos_requests")
       .insert({
-        ...(op.payload as Record<string, never>),
+        ...op.payload,
         idempotency_key: op.id,
         client_created_at: op.createdAt,
-      })
+      } as never)
       .select("id, reference")
       .single();
 
@@ -139,7 +141,7 @@ async function transmit(op: QueuedOperation): Promise<void> {
 
   if (op.kind === "SOS_UPDATE") {
     const { sos_id, ...patch } = op.payload as { sos_id: string } & Record<string, unknown>;
-    const { error } = await supabase.from("sos_requests").update(patch).eq("id", sos_id);
+    const { error } = await supabase.from("sos_requests").update(patch as never).eq("id", sos_id);
     if (error) throw error;
     await removeOperation(op.id);
     return;
@@ -147,7 +149,7 @@ async function transmit(op: QueuedOperation): Promise<void> {
 
   const { error } = await supabase
     .from("community_reports")
-    .insert(op.payload as Record<string, never>);
+    .insert(op.payload as never);
   if (error) throw error;
   await removeOperation(op.id);
 }
