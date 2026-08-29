@@ -3,7 +3,7 @@ import { Crosshair, Layers, Minus, Plus, RotateCcw } from "lucide-react";
 import { MapPin } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { clusterPoints, type LatLng } from "@/lib/geo";
-import { AP_BOUNDS, AP_CENTER, AP_DEFAULT_VIEWPORT, isInsideAndhraPradesh } from "@/lib/domain";
+import { AP_BOUNDS, AP_CENTER, isInsideAndhraPradesh } from "@/lib/domain";
 import { DataTag, Panel } from "./kit";
 
 export interface MapMarker extends LatLng {
@@ -15,10 +15,25 @@ export interface MapMarker extends LatLng {
   score?: number;
 }
 
-/** Base viewport — Krishna–Guntur corridor, Andhra Pradesh. */
-const BASE = AP_DEFAULT_VIEWPORT;
+/** The supplied map asset covers the complete configured Andhra Pradesh region. */
+const BASE = AP_BOUNDS;
 const BASE_LAT_SPAN = BASE.maxLat - BASE.minLat;
 const BASE_LNG_SPAN = BASE.maxLng - BASE.minLng;
+
+/**
+ * Transparent padding in the supplied PNG was measured from the source asset.
+ * Mapping its non-transparent bounds to AP_BOUNDS keeps pins aligned with the
+ * geographic map while retaining the asset's original transparent margins.
+ */
+const AP_MAP_ASSET = {
+  src: "/maps/andhra-pradesh-assembly-constituencies.png",
+  width: 1480,
+  height: 1214,
+  alphaBounds: { minX: 128, minY: 66, maxX: 1445, maxY: 1186 },
+};
+
+const AP_MAP_ALPHA_WIDTH = AP_MAP_ASSET.alphaBounds.maxX - AP_MAP_ASSET.alphaBounds.minX;
+const AP_MAP_ALPHA_HEIGHT = AP_MAP_ASSET.alphaBounds.maxY - AP_MAP_ASSET.alphaBounds.minY;
 
 const MIN_ZOOM = 0.6;
 const MAX_ZOOM = 12;
@@ -106,6 +121,7 @@ export function OperationsMap({
   const [showLegend, setShowLegend] = useState(true);
   const [view, setView] = useState<View>(DEFAULT_VIEW);
   const [hidden, setHidden] = useState<Record<string, boolean>>({});
+  const [mapAssetError, setMapAssetError] = useState(false);
   const surface = useRef<HTMLDivElement | null>(null);
   const drag = useRef<{ x: number; y: number; view: View } | null>(null);
   const pinch = useRef<{ distance: number; zoom: number } | null>(null);
@@ -151,6 +167,19 @@ export function OperationsMap({
     },
     [toPercent],
   );
+  const mapAssetPosition = useMemo(() => {
+    const topLeft = toPercent({ lat: AP_BOUNDS.maxLat, lng: AP_BOUNDS.minLng });
+    const bottomRight = toPercent({ lat: AP_BOUNDS.minLat, lng: AP_BOUNDS.maxLng });
+    const stateWidth = bottomRight.x - topLeft.x;
+    const stateHeight = bottomRight.y - topLeft.y;
+
+    return {
+      x: topLeft.x - stateWidth * (AP_MAP_ASSET.alphaBounds.minX / AP_MAP_ALPHA_WIDTH),
+      y: topLeft.y - stateHeight * (AP_MAP_ASSET.alphaBounds.minY / AP_MAP_ALPHA_HEIGHT),
+      width: stateWidth * (AP_MAP_ASSET.width / AP_MAP_ALPHA_WIDTH),
+      height: stateHeight * (AP_MAP_ASSET.height / AP_MAP_ALPHA_HEIGHT),
+    };
+  }, [toPercent]);
   const routeIsValid =
     !!route &&
     route.length >= 2 &&
@@ -277,18 +306,36 @@ export function OperationsMap({
           event.preventDefault();
         }}
       >
-        <div
-          className="pointer-events-none absolute inset-0 opacity-35"
-          style={{
-            backgroundImage:
-              "linear-gradient(28deg, transparent 48%, #62a6a9 49%, transparent 51%), linear-gradient(112deg, transparent 48%, #62a6a9 49%, transparent 51%), linear-gradient(#39747a 1px, transparent 1px), linear-gradient(90deg, #39747a 1px, transparent 1px)",
-            backgroundSize: `${180 * view.zoom}px ${140 * view.zoom}px, ${220 * view.zoom}px ${180 * view.zoom}px, ${42 * view.zoom}px ${42 * view.zoom}px, ${42 * view.zoom}px ${42 * view.zoom}px`,
-          }}
-        />
-        <div className="pointer-events-none absolute inset-x-[10%] top-[52%] h-5 -rotate-6 rounded-full bg-cyan-300/10 blur-md" />
-        <div className="pointer-events-none absolute bottom-[10%] right-[8%] font-mono text-[10px] tracking-widest text-cyan-100/50 uppercase">
-          Krishna · Guntur · Andhra Pradesh
+        <svg
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          className="pointer-events-none absolute inset-0 h-full w-full"
+          role="img"
+          aria-label="Andhra Pradesh assembly constituency map"
+        >
+          {!mapAssetError && (
+            <image
+              href={AP_MAP_ASSET.src}
+              x={mapAssetPosition.x}
+              y={mapAssetPosition.y}
+              width={mapAssetPosition.width}
+              height={mapAssetPosition.height}
+              opacity="0.86"
+              preserveAspectRatio="none"
+              onError={() => setMapAssetError(true)}
+            />
+          )}
+        </svg>
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[#071317]/10 via-transparent to-[#071317]/30" />
+        <div className="pointer-events-none absolute bottom-[10%] right-[8%] rounded bg-[#071317]/70 px-2 py-1 font-mono text-[10px] tracking-widest text-cyan-50/80 uppercase backdrop-blur-sm">
+          Andhra Pradesh · supplied open-data map
         </div>
+        {mapAssetError && (
+          <div className="absolute inset-x-3 bottom-3 rounded-lg border border-destructive/60 bg-destructive/20 px-3 py-2 text-xs text-destructive-foreground shadow-lg backdrop-blur sm:inset-x-auto sm:right-3 sm:max-w-sm">
+            The supplied Andhra Pradesh map asset could not be loaded. Map coordinates and response
+            records remain available, but the geographic boundary is unavailable.
+          </div>
+        )}
 
         {routeIsValid && (
           <>
