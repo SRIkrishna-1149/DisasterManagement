@@ -3,7 +3,13 @@ import { useState, type FormEvent } from "react";
 import { AlertTriangle, Crosshair, MapPin, ShieldAlert, X } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useEmergencyLocation } from "@/hooks/useEmergencyLocation";
-import { LOCATION_CONFIDENCE, SEVERITIES, SOS_CATEGORIES, type Severity } from "@/lib/domain";
+import {
+  isInsideAndhraPradesh,
+  LOCATION_CONFIDENCE,
+  SEVERITIES,
+  SOS_CATEGORIES,
+  type Severity,
+} from "@/lib/domain";
 import { findActiveSos, looksDuplicate, submitSos, type SosDraft } from "@/lib/sos-service";
 import { Button, ErrorState, Field, inputClass } from "./kit";
 
@@ -46,9 +52,14 @@ export function QuickSosDialog({ onClose }: { onClose: () => void }) {
         (!coordinate ||
           Math.abs(coordinate.lat) > 90 ||
           Math.abs(coordinate.lng) > 180 ||
-          (coordinate.lat === 0 && coordinate.lng === 0))
+          (coordinate.lat === 0 && coordinate.lng === 0) ||
+          !isInsideAndhraPradesh(coordinate.lat, coordinate.lng))
       )
-        throw new Error("Enter a valid latitude and longitude.");
+        throw new Error("Enter a valid Andhra Pradesh latitude and longitude.");
+      if (source === "GPS" && coordinate && !isInsideAndhraPradesh(coordinate.lat, coordinate.lng))
+        throw new Error(
+          "GPS is outside the Andhra Pradesh operating area. Use a manual pin or landmark.",
+        );
       if (source === "GPS" && !coordinate)
         throw new Error("GPS is not ready. Use a manual pin or landmark if you cannot wait.");
       const draft: SosDraft = {
@@ -74,9 +85,11 @@ export function QuickSosDialog({ onClose }: { onClose: () => void }) {
           return;
         }
       }
-      await submitSos(draft, user.id);
+      const transmission = await submitSos(draft, user.id);
       setNotice(
-        "SOS received by Sentinel. Responder notification is queued for simultaneous delivery; My SOS will show when a responder accepts it.",
+        transmission.state === "TRANSMITTED"
+          ? "SOS SENT. The response system confirmed the request; responder notification delivery is tracked separately. My SOS will show when a responder accepts it."
+          : "SOS QUEUED. Your request has not yet been received by the response team and will retry when connectivity returns.",
       );
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "SOS could not be submitted.");
@@ -245,7 +258,9 @@ export function QuickSosDialog({ onClose }: { onClose: () => void }) {
                     ? `GPS ready · ${location.lat.toFixed(4)}, ${location.lng.toFixed(4)}${location.accuracyM ? ` · accuracy ${Math.round(location.accuracyM)} m` : ""}`
                     : status === "locating"
                       ? "Requesting GPS…"
-                      : "GPS unavailable or not yet granted."}
+                      : status === "outside-region"
+                        ? "GPS is outside the Andhra Pradesh operating area. Use a manual pin or landmark."
+                        : "GPS unavailable or not yet granted."}
                 </p>
               )}
               {source === "MANUAL_PIN" && (

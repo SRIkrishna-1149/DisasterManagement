@@ -1,12 +1,20 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 import { AlertTriangle, CheckCircle2, Crosshair, MapPin, ShieldAlert } from "lucide-react";
+import { OperationsMap } from "@/components/map-panel";
 import { AuthGate, LocationConfidence, PageFrame } from "@/components/portal";
 import { Button, ErrorState, Field, inputClass, Panel } from "@/components/kit";
 import { useAuth } from "@/hooks/useAuth";
 import { useEmergencyLocation } from "@/hooks/useEmergencyLocation";
-import { LOCATION_CONFIDENCE, SEVERITIES, SOS_CATEGORIES, type Severity } from "@/lib/domain";
+import {
+  isInsideAndhraPradesh,
+  LOCATION_CONFIDENCE,
+  SEVERITIES,
+  SOS_CATEGORIES,
+  type Severity,
+} from "@/lib/domain";
 import { findActiveSos, looksDuplicate, submitSos, type SosDraft } from "@/lib/sos-service";
+import type { TransmissionState } from "@/lib/domain";
 
 export const Route = createFileRoute("/sos")({ component: SosRoute });
 
@@ -35,6 +43,7 @@ function SosForm() {
   const [error, setError] = useState<string | null>(null);
   const [duplicate, setDuplicate] = useState<{ reference: number; id: string } | null>(null);
   const [sent, setSent] = useState(false);
+  const [transmissionState, setTransmissionState] = useState<TransmissionState>("QUEUED");
   const [busy, setBusy] = useState(false);
 
   const effectiveLocation =
@@ -61,9 +70,12 @@ function SosForm() {
       !Number.isFinite(lng) ||
       Math.abs(lat) > 90 ||
       Math.abs(lng) > 180 ||
-      (lat === 0 && lng === 0)
+      (lat === 0 && lng === 0) ||
+      !isInsideAndhraPradesh(lat, lng)
     ) {
-      setError("Enter a valid latitude and longitude, or use a landmark instead.");
+      setError(
+        "Enter coordinates within the Andhra Pradesh operating area, or use a landmark instead.",
+      );
       return;
     }
     setManual(lat, lng, null, "MANUAL_PIN");
@@ -81,6 +93,8 @@ function SosForm() {
         throw new Error("Choose the nearest landmark so responders have an approximate location.");
       if (source !== "LANDMARK" && !effectiveLocation)
         throw new Error("Location is needed. Allow GPS, enter a manual pin, or choose a landmark.");
+      if (effectiveLocation && !isInsideAndhraPradesh(effectiveLocation.lat, effectiveLocation.lng))
+        throw new Error("The emergency location must be within the Andhra Pradesh operating area.");
       const draft: SosDraft = {
         reporter_name: null,
         people_count: Math.max(1, Math.floor(Number(people) || 1)),
@@ -105,7 +119,8 @@ function SosForm() {
           return;
         }
       }
-      await submitSos(draft, user.id);
+      const transmission = await submitSos(draft, user.id);
+      setTransmissionState(transmission.state);
       setSent(true);
       setDuplicate(null);
     } catch (caught) {
@@ -123,8 +138,16 @@ function SosForm() {
     return (
       <PageFrame
         eyebrow="Emergency / transmission"
-        title="SOS saved for response"
-        description="Your request is in the response system or waiting in the protected device queue. Check My SOS for server acknowledgement and status updates."
+        title={
+          transmissionState === "TRANSMITTED"
+            ? "SOS sent for response"
+            : "SOS queued for transmission"
+        }
+        description={
+          transmissionState === "TRANSMITTED"
+            ? "The response system confirmed receipt. Responder notification delivery and acceptance are tracked separately."
+            : "Your request is protected on this device but has not yet been received by the response team. It will retry automatically when connectivity returns."
+        }
         actions={
           <Link to="/my-sos">
             <Button variant="primary">Track my SOS</Button>
@@ -135,10 +158,13 @@ function SosForm() {
           <div className="flex gap-4">
             <CheckCircle2 className="h-8 w-8 shrink-0 text-safe" />
             <div>
-              <h2 className="text-lg font-bold">Do not assume delivery until acknowledged</h2>
+              <h2 className="text-lg font-bold">
+                {transmissionState === "TRANSMITTED" ? "SOS SENT" : "SOS QUEUED"}
+              </h2>
               <p className="mt-1 text-sm text-muted-foreground">
-                If you were offline, the request remains queued and will retry automatically. Keep
-                your connection on if possible.
+                {transmissionState === "TRANSMITTED"
+                  ? "The backend has acknowledged this request. Do not assume responder acceptance until My SOS shows validation."
+                  : "The request remains queued and will retry automatically. Keep your connection on if possible."}
               </p>
               <div className="mt-4 flex flex-wrap gap-2">
                 <Link to="/my-sos">
@@ -292,6 +318,11 @@ function SosForm() {
                 {locationStatus === "unavailable" && (
                   <p className="text-sm text-accent">GPS is unavailable on this device.</p>
                 )}
+                {locationStatus === "outside-region" && (
+                  <p className="text-sm text-accent">
+                    GPS is outside the Andhra Pradesh operating area. Use a manual pin or landmark.
+                  </p>
+                )}
                 {location && (
                   <LocationConfidence
                     source="GPS"
@@ -307,25 +338,42 @@ function SosForm() {
               </div>
             )}
             {source === "MANUAL_PIN" && (
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <Field label="Latitude">
-                  <input
-                    className={inputClass}
-                    inputMode="decimal"
-                    value={manualLat}
-                    onChange={(event) => setManualLat(event.target.value)}
-                    placeholder="16.5062"
-                  />
-                </Field>
-                <Field label="Longitude">
-                  <input
-                    className={inputClass}
-                    inputMode="decimal"
-                    value={manualLng}
-                    onChange={(event) => setManualLng(event.target.value)}
-                    placeholder="80.6480"
-                  />
-                </Field>
+              <div className="mt-4 space-y-3">
+                <p className="text-xs text-muted-foreground">
+                  Tap or click the map to place a pin, then confirm the coordinates below.
+                </p>
+                <OperationsMap
+                  markers={[]}
+                  title="Drop a manual pin"
+                  {...(Number.isFinite(Number(manualLat)) && Number.isFinite(Number(manualLng))
+                    ? { pin: { lat: Number(manualLat), lng: Number(manualLng) } }
+                    : {})}
+                  onMapClick={(point) => {
+                    setManualLat(point.lat.toFixed(5));
+                    setManualLng(point.lng.toFixed(5));
+                    setError(null);
+                  }}
+                />
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <Field label="Latitude">
+                    <input
+                      className={inputClass}
+                      inputMode="decimal"
+                      value={manualLat}
+                      onChange={(event) => setManualLat(event.target.value)}
+                      placeholder="16.5062"
+                    />
+                  </Field>
+                  <Field label="Longitude">
+                    <input
+                      className={inputClass}
+                      inputMode="decimal"
+                      value={manualLng}
+                      onChange={(event) => setManualLng(event.target.value)}
+                      placeholder="80.6480"
+                    />
+                  </Field>
+                </div>
                 <Button type="button" size="sm" onClick={useManualLocation}>
                   Set manual pin
                 </Button>

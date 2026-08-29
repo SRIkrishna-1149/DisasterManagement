@@ -23,6 +23,7 @@ import { OperationsMap, type MapMarker } from "@/components/map-panel";
 import { QuickSosDialog } from "@/components/quick-sos";
 import { useAuth } from "@/hooks/useAuth";
 import { AP_CENTER, FEATURE_FLAGS, localTime } from "@/lib/domain";
+import { getDemoAlerts, type DemoAlert } from "@/lib/demo-data";
 import type { Tables } from "@/integrations/supabase/types";
 import { ruleBasedEngine, simulatedReading } from "@/lib/risk-engine";
 import { supabase } from "@/integrations/supabase/client";
@@ -84,7 +85,14 @@ function HomeRoute() {
     { ...reading, communityReports: alerts.data?.length ?? 0, sosDensity: mySos.data?.length ?? 0 },
     "flood",
   );
-  const visibleAlerts = alerts.data ?? [];
+  const persistedAlerts = (alerts.data ?? []).filter(
+    (alert) => alert.approval_status === "APPROVED",
+  );
+  const visibleAlerts =
+    FEATURE_FLAGS.ENABLE_DEMO_MODE && !alerts.isError && persistedAlerts.length === 0
+      ? getDemoAlerts()
+      : persistedAlerts;
+  const isDemoAlert = (alert: AlertRow | DemoAlert): alert is DemoAlert => "simulated" in alert;
   const activeSos = (mySos.data ?? []).filter(
     (item) => !["RESOLVED", "CANCELLED", "REJECTED", "DUPLICATE"].includes(item.status),
   );
@@ -118,7 +126,6 @@ function HomeRoute() {
       quality: "CACHED",
     },
   ];
-
 
   return (
     <AppShell>
@@ -244,6 +251,11 @@ function HomeRoute() {
                         </span>
                       </div>
                       <p className="mt-1 text-sm font-semibold">{alert.title}</p>
+                      {isDemoAlert(alert) && (
+                        <p className="mt-1 font-mono text-[10px] font-bold tracking-wider text-accent uppercase">
+                          Simulated demo notice
+                        </p>
+                      )}
                       <p className="mt-1 text-xs text-muted-foreground">
                         {alert.recommended_action ?? alert.message}
                       </p>

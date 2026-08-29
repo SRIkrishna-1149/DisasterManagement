@@ -1,7 +1,17 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState, type FormEvent } from "react";
-import { Camera, MapPin, Send, TriangleAlert } from "lucide-react";
+import { useMemo, useState, type FormEvent } from "react";
+import {
+  Activity,
+  BarChart3,
+  Camera,
+  Clock3,
+  MapPin,
+  Send,
+  ShieldCheck,
+  TriangleAlert,
+  UsersRound,
+} from "lucide-react";
 import { AuthGate, PageFrame } from "@/components/portal";
 import {
   Button,
@@ -15,7 +25,14 @@ import {
 } from "@/components/kit";
 import { useAuth } from "@/hooks/useAuth";
 import { useEmergencyLocation } from "@/hooks/useEmergencyLocation";
-import { REPORT_TYPES, type Severity, SEVERITIES, localTime } from "@/lib/domain";
+import {
+  isInsideAndhraPradesh,
+  REPORT_TYPES,
+  type Severity,
+  SEVERITIES,
+  localTime,
+} from "@/lib/domain";
+import { calculateReportAnalytics, type ReportAnalytics } from "@/lib/reports";
 import { newIdempotencyKey } from "@/lib/sos-service";
 import { enqueue } from "@/lib/offline-queue";
 import { supabase } from "@/integrations/supabase/client";
@@ -34,7 +51,7 @@ function ReportsRoute() {
 }
 
 function ReportForm() {
-  const { user } = useAuth();
+  const { user, isOperator } = useAuth();
   const { location, request } = useEmergencyLocation();
   const client = useQueryClient();
   const [reportType, setReportType] = useState<string>(REPORT_TYPES[0]);
@@ -57,6 +74,65 @@ function ReportForm() {
       return (data ?? []) as ReportRow[];
     },
   });
+  const operatorSos = useQuery({
+    queryKey: ["reports-analytics-sos"],
+    enabled: isOperator,
+    queryFn: async () => {
+      const { data, error: queryError } = await supabase
+        .from("sos_requests")
+        .select("status, severity, category, created_at, validated_at")
+        .limit(1000);
+      if (queryError) throw queryError;
+      return data ?? [];
+    },
+  });
+  const operatorAlerts = useQuery({
+    queryKey: ["reports-analytics-alerts"],
+    enabled: isOperator,
+    queryFn: async () => {
+      const { data, error: queryError } = await supabase
+        .from("alerts")
+        .select("level, issued_at")
+        .limit(1000);
+      if (queryError) throw queryError;
+      return data ?? [];
+    },
+  });
+  const operatorReports = useQuery({
+    queryKey: ["reports-analytics-community"],
+    enabled: isOperator,
+    queryFn: async () => {
+      const { data, error: queryError } = await supabase
+        .from("community_reports")
+        .select("verification_status, created_at")
+        .limit(1000);
+      if (queryError) throw queryError;
+      return data ?? [];
+    },
+  });
+  const operatorTeams = useQuery({
+    queryKey: ["reports-analytics-teams"],
+    enabled: isOperator,
+    queryFn: async () => {
+      const { data, error: queryError } = await supabase.from("rescue_teams").select("status");
+      if (queryError) throw queryError;
+      return data ?? [];
+    },
+  });
+  const analytics = useMemo<ReportAnalytics | null>(() => {
+    if (!isOperator) return null;
+    return calculateReportAnalytics({
+      sos: operatorSos.data ?? [],
+      alerts: operatorAlerts.data ?? [],
+      reports: operatorReports.data ?? [],
+      teams: operatorTeams.data ?? [],
+    });
+  }, [isOperator, operatorAlerts.data, operatorReports.data, operatorSos.data, operatorTeams.data]);
+  const analyticsError =
+    operatorSos.isError ||
+    operatorAlerts.isError ||
+    operatorReports.isError ||
+    operatorTeams.isError;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -64,6 +140,11 @@ function ReportForm() {
     setBusy(true);
     setNotice(null);
     setError(null);
+    if (location && !isInsideAndhraPradesh(location.lat, location.lng)) {
+      setError("Attached location must be within the Andhra Pradesh operating area.");
+      setBusy(false);
+      return;
+    }
     const payload = {
       user_id: user.id,
       report_type: reportType,
@@ -226,6 +307,188 @@ function ReportForm() {
           </Panel>
         </aside>
       </div>
+      {isOperator && (
+        <ReportsAnalytics
+          analytics={analytics}
+          loading={
+            operatorSos.isLoading ||
+            operatorAlerts.isLoading ||
+            operatorReports.isLoading ||
+            operatorTeams.isLoading
+          }
+          error={analyticsError}
+        />
+      )}
     </PageFrame>
+  );
+}
+
+function ReportsAnalytics({
+  analytics,
+  loading,
+  error,
+}: {
+  analytics: ReportAnalytics | null;
+  loading: boolean;
+  error: boolean;
+}) {
+  if (loading) {
+    return (
+      <Panel title="Response analytics">
+        <p className="flex items-center gap-2 text-sm text-muted-foreground">
+          <BarChart3 className="h-4 w-4" /> Loading reports analyticsâ€¦
+        </p>
+      </Panel>
+    );
+  }
+  if (error || !analytics) {
+    return (
+      <ErrorState message="Reports analytics are unavailable. Existing report submissions remain available above." />
+    );
+  }
+
+  const maxSeverity = Math.max(1, ...Object.values(analytics.severityDistribution));
+  const maxTrend = Math.max(
+    1,
+    ...analytics.sevenDayTrend.map((day) => Math.max(day.sos, day.reports)),
+  );
+  const metricCards = [
+    ["SOS requests", analytics.sosCount, "Persisted requests"],
+    ["Active incidents", analytics.activeIncidents, "Open response states"],
+    [
+      "Validation time",
+      analytics.averageValidationMinutes === null
+        ? "—"
+        : `${analytics.averageValidationMinutes} min`,
+      "Average where recorded",
+    ],
+    ["Resolved SOS", analytics.resolvedCount, "Server status = resolved"],
+    ["Community reports", analytics.communityReports, `${analytics.verifiedReports} verified`],
+    ["Teams available", analytics.availableTeams, `${analytics.deployedTeams} deployed`],
+  ] as const;
+
+  return (
+    <section className="space-y-4" aria-labelledby="reports-analytics-title">
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="font-mono text-[10px] font-semibold tracking-[0.18em] text-primary uppercase">
+            Authorised operations / analytics
+          </p>
+          <h2 id="reports-analytics-title" className="mt-1 text-2xl font-bold">
+            Response reports
+          </h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Calculated from persisted SOS, alert, report, and team records. No unavailable metrics
+            are invented.
+          </p>
+        </div>
+        <DataTag quality="RECENT" />
+      </div>
+
+      <div className="grid gap-3 grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+        {metricCards.map(([label, value, hint]) => (
+          <StatCard key={label} label={label} value={value} hint={hint} />
+        ))}
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Panel title="Severity distribution">
+          <div className="space-y-3">
+            {(Object.entries(analytics.severityDistribution) as [Severity, number][]).map(
+              ([severity, count]) => (
+                <div key={severity}>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="font-semibold">{severity}</span>
+                    <span className="font-mono text-muted-foreground">{count}</span>
+                  </div>
+                  <div className="mt-1 h-2 rounded-full bg-surface-2">
+                    <div
+                      className="h-2 rounded-full bg-primary"
+                      style={{ width: `${(count / maxSeverity) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              ),
+            )}
+          </div>
+        </Panel>
+        <Panel title="Seven-day activity trend">
+          <div className="overflow-x-auto">
+            <div className="grid min-w-[360px] grid-cols-7 gap-2">
+              {analytics.sevenDayTrend.map((day) => (
+                <div
+                  key={day.label}
+                  className="flex min-h-32 flex-col items-center justify-end gap-1"
+                >
+                  <div
+                    className="flex h-24 items-end gap-1"
+                    aria-label={`${day.label}: ${day.sos} SOS, ${day.reports} reports`}
+                  >
+                    <div
+                      className="w-3 rounded-t bg-destructive/75"
+                      style={{
+                        height: `${Math.max(day.sos ? 8 : 2, (day.sos / maxTrend) * 100)}%`,
+                      }}
+                    />
+                    <div
+                      className="w-3 rounded-t bg-primary/75"
+                      style={{
+                        height: `${Math.max(day.reports ? 8 : 2, (day.reports / maxTrend) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                  <span className="text-[10px] text-muted-foreground">{day.label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <p className="mt-3 flex flex-wrap gap-3 text-[11px] text-muted-foreground">
+            <span>
+              <i className="mr-1 inline-block h-2 w-2 rounded-full bg-destructive/75" />
+              SOS requests
+            </span>
+            <span>
+              <i className="mr-1 inline-block h-2 w-2 rounded-full bg-primary/75" />
+              Community reports
+            </span>
+          </p>
+        </Panel>
+      </div>
+
+      <div className="md:hidden space-y-3">
+        <Panel title="Mobile summary">
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <p className="flex items-center gap-2">
+              <Activity className="h-4 w-4 text-primary" /> {analytics.alertHistory} alerts logged
+            </p>
+            <p className="flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-safe" /> {analytics.validatedCount} validated
+            </p>
+            <p className="flex items-center gap-2">
+              <UsersRound className="h-4 w-4 text-primary" /> {analytics.deployedTeams} teams
+              deployed
+            </p>
+            <p className="flex items-center gap-2">
+              <Clock3 className="h-4 w-4 text-accent" />{" "}
+              {analytics.averageValidationMinutes === null
+                ? "No timing data"
+                : `${analytics.averageValidationMinutes} min validation`}
+            </p>
+          </div>
+        </Panel>
+      </div>
+    </section>
+  );
+}
+
+function StatCard({ label, value, hint }: { label: string; value: string | number; hint: string }) {
+  return (
+    <div className="rounded-lg border border-border bg-surface/60 p-3">
+      <p className="text-[10px] font-medium tracking-wider text-muted-foreground uppercase">
+        {label}
+      </p>
+      <p className="mt-1 text-xl font-bold">{value}</p>
+      <p className="mt-1 text-[10px] text-muted-foreground">{hint}</p>
+    </div>
   );
 }

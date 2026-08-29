@@ -19,12 +19,7 @@ export type SosStatus =
   | "CANCELLED"
   | "DUPLICATE";
 
-export type TransmissionState =
-  | "QUEUED"
-  | "SYNCING"
-  | "TRANSMITTED"
-  | "FAILED_RETRYING"
-  | "FAILED";
+export type TransmissionState = "QUEUED" | "SYNCING" | "TRANSMITTED" | "FAILED_RETRYING" | "FAILED";
 
 export type DataQuality = "LIVE" | "RECENT" | "STALE" | "CACHED" | "SIMULATED" | "UNAVAILABLE";
 
@@ -189,7 +184,8 @@ export function calculatePriority(input: PriorityInput): PriorityResult {
         input.areaRiskScore === null
           ? 0
           : Math.round(w.locationRisk * Math.min(1, input.areaRiskScore / 100)),
-      detail: input.areaRiskScore === null ? "No area assessment" : `Area risk ${input.areaRiskScore}`,
+      detail:
+        input.areaRiskScore === null ? "No area assessment" : `Area risk ${input.areaRiskScore}`,
     },
     {
       label: "Waiting time",
@@ -210,7 +206,8 @@ export function calculatePriority(input: PriorityInput): PriorityResult {
         input.distanceKm === null
           ? 0
           : Math.round(w.distance * Math.max(0, 1 - Math.min(1, input.distanceKm / 20))),
-      detail: input.distanceKm === null ? "Distance unknown" : `${input.distanceKm.toFixed(1)} km away`,
+      detail:
+        input.distanceKm === null ? "Distance unknown" : `${input.distanceKm.toFixed(1)} km away`,
     },
     {
       label: "Verification",
@@ -220,7 +217,10 @@ export function calculatePriority(input: PriorityInput): PriorityResult {
     },
   ];
 
-  const score = Math.min(100, factors.reduce((sum, f) => sum + f.points, 0));
+  const score = Math.min(
+    100,
+    factors.reduce((sum, f) => sum + f.points, 0),
+  );
   return { score, factors };
 }
 
@@ -231,8 +231,10 @@ export const LOCATION_CONFIDENCE: Record<LocationSource, { label: string; confid
 };
 
 /**
- * Operating region: Andhra Pradesh, India. All demo geography must stay inside
- * these bounds — nothing outside AP is generated or displayed.
+ * Operating region: Andhra Pradesh, India. This broad operating box is used as
+ * a safe demo-data guard; it is not presented as an official legal boundary.
+ * All demo geography must stay inside the configured operating bounds and is
+ * labelled as demo data when it is not sourced from a connected service.
  */
 export const AP_BOUNDS = {
   minLat: 12.62,
@@ -272,13 +274,15 @@ export const LANDMARKS = [
   { name: "Amaravati Secretariat Junction", lat: 16.573, lng: 80.358 },
 ] as const;
 
-
 export const FEATURE_FLAGS = {
   ENABLE_LIVE_WEATHER: false,
   ENABLE_PUSH_NOTIFICATIONS: false,
   ENABLE_AI_RISK_MODEL: false,
   ENABLE_OFFLINE_QUEUE: true,
   ENABLE_DEMO_MODE: true,
+  ENABLE_SATELLITE_FEED: false,
+  ENABLE_IOT_FEED: false,
+  ENABLE_GROUND_SENSOR_FEED: false,
 } as const;
 
 export function formatTimeAgo(iso: string | null | undefined): string {

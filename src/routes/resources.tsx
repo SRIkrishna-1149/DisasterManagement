@@ -1,11 +1,22 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
-import { Building2, Hospital, MapPinned, Navigation, Phone, RefreshCw } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  Building2,
+  Crosshair,
+  Hospital,
+  MapPinned,
+  Navigation,
+  Phone,
+  RefreshCw,
+  Route as RouteIcon,
+} from "lucide-react";
 import { OperationsMap, type MapMarker } from "@/components/map-panel";
 import { Button, DataTag, EmptyState, ErrorState, Panel } from "@/components/kit";
 import { PageFrame } from "@/components/portal";
-import { formatTimeAgo, type DataQuality } from "@/lib/domain";
+import { AP_CENTER, formatTimeAgo, isInsideAndhraPradesh, type DataQuality } from "@/lib/domain";
+import { generateSimulatedRoute, nearbyToRoute } from "@/lib/geo";
+import { useEmergencyLocation } from "@/hooks/useEmergencyLocation";
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
 
@@ -16,6 +27,20 @@ export const Route = createFileRoute("/resources")({ component: ResourcesRoute }
 
 function ResourcesRoute() {
   const [kind, setKind] = useState<"ALL" | "shelter" | "hospital">("ALL");
+  const [routeTargetId, setRouteTargetId] = useState<string | null>(() =>
+    typeof window === "undefined" ? null : window.sessionStorage.getItem("sentinel-route-target"),
+  );
+  const [routeVariant, setRouteVariant] = useState(() =>
+    typeof window === "undefined"
+      ? 0
+      : Number(window.sessionStorage.getItem("sentinel-route-variant") ?? 0) || 0,
+  );
+  const { location, request } = useEmergencyLocation();
+  useEffect(() => {
+    if (routeTargetId) window.sessionStorage.setItem("sentinel-route-target", routeTargetId);
+    else window.sessionStorage.removeItem("sentinel-route-target");
+    window.sessionStorage.setItem("sentinel-route-variant", String(routeVariant));
+  }, [routeTargetId, routeVariant]);
   const resources = useQuery({
     queryKey: ["resources"],
     queryFn: async () => {
@@ -30,6 +55,30 @@ function ResourcesRoute() {
     staleTime: 60_000,
   });
   const rows = (resources.data ?? []).filter((row) => kind === "ALL" || row.resource_type === kind);
+  const routeTarget = rows.find((row) => row.id === routeTargetId) ?? null;
+  const simulatedRoute = useMemo(() => {
+    const routeOrigin =
+      location && isInsideAndhraPradesh(location.lat, location.lng)
+        ? { lat: location.lat, lng: location.lng }
+        : AP_CENTER;
+    return routeTarget
+      ? generateSimulatedRoute(
+          routeOrigin,
+          { lat: routeTarget.latitude, lng: routeTarget.longitude },
+          routeVariant,
+        )
+      : null;
+  }, [location, routeTarget, routeVariant]);
+  const nearbyResources = useMemo(() => {
+    if (!simulatedRoute) return [];
+    return nearbyToRoute(
+      (resources.data ?? [])
+        .filter((resource) => resource.id !== routeTarget?.id)
+        .map((resource) => ({ resource, lat: resource.latitude, lng: resource.longitude })),
+      simulatedRoute.points,
+      2.5,
+    );
+  }, [resources.data, routeTarget?.id, simulatedRoute]);
   const markers: MapMarker[] = rows.map((row) => ({
     id: row.id,
     kind: "resource",
@@ -91,13 +140,90 @@ function ResourcesRoute() {
           ) : (
             <div className="space-y-3">
               {rows.map((resource) => (
-                <ResourceCard key={resource.id} resource={resource} />
+                <ResourceCard
+                  key={resource.id}
+                  resource={resource}
+                  onPreviewRoute={() => {
+                    setRouteTargetId(resource.id);
+                    setRouteVariant(0);
+                  }}
+                />
               ))}
             </div>
           )}
         </div>
-        <OperationsMap markers={markers} title="Help locations" />
+        <OperationsMap
+          markers={markers}
+          {...(simulatedRoute ? { route: simulatedRoute.points } : {})}
+          routeLabel={simulatedRoute?.label ?? "SIMULATED ROUTE"}
+          title="Help locations"
+        />
       </div>
+      {routeTarget && (
+        <Panel title="Route preview" className="mt-5">
+          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+            <div>
+              <p className="flex items-center gap-2 text-sm font-semibold">
+                <RouteIcon className="h-4 w-4 text-primary" />
+                {routeTarget.name}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Origin: {location ? "your recent GPS position" : "Vijayawada demo origin"} ·
+                destination: AP-validated resource
+              </p>
+              {simulatedRoute ? (
+                <p className="mt-2 text-sm text-muted-foreground">
+                  {simulatedRoute.distanceKm.toFixed(1)} km estimated · route alternative{" "}
+                  {routeVariant + 1}
+                </p>
+              ) : (
+                <p className="mt-2 text-sm text-destructive">
+                  Route unavailable inside the AP operating bounds.
+                </p>
+              )}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {!location && (
+                <Button size="sm" onClick={request}>
+                  <Crosshair className="h-4 w-4" />
+                  Use current GPS
+                </Button>
+              )}
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setRouteVariant((variant) => (variant + 1) % 3)}
+                disabled={!simulatedRoute}
+              >
+                Another simulated route
+              </Button>
+            </div>
+          </div>
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <DataTag quality="SIMULATED" />
+            <span className="text-xs text-muted-foreground">
+              Available route preview only; safety and road conditions are not verified.
+            </span>
+          </div>
+          {nearbyResources.length > 0 && (
+            <div className="mt-4 border-t border-border pt-4">
+              <p className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">
+                Nearby resources along preview
+              </p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {nearbyResources.map(({ resource }) => (
+                  <span
+                    key={resource.id}
+                    className="rounded-md border border-border bg-surface/60 px-2 py-1 text-xs"
+                  >
+                    {resource.name}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </Panel>
+      )}
     </PageFrame>
   );
 }
@@ -114,7 +240,13 @@ function qualityFor(lastVerified: string | null): DataQuality {
         : "CACHED";
 }
 
-function ResourceCard({ resource }: { resource: ResourceRow }) {
+function ResourceCard({
+  resource,
+  onPreviewRoute,
+}: {
+  resource: ResourceRow;
+  onPreviewRoute: () => void;
+}) {
   const statusTone: Record<ResourceStatus, string> = {
     ACTIVE: "text-safe border-safe/40 bg-safe/10",
     INACTIVE: "text-muted-foreground border-border bg-muted/40",
@@ -182,6 +314,14 @@ function ResourceCard({ resource }: { resource: ResourceRow }) {
             <Navigation className="h-3.5 w-3.5" />
             Route available
           </a>
+          <button
+            type="button"
+            onClick={onPreviewRoute}
+            className="inline-flex min-h-9 items-center gap-1 rounded-md border border-primary/40 px-2 text-xs font-semibold text-primary hover:bg-primary/10"
+          >
+            <RouteIcon className="h-3.5 w-3.5" />
+            Preview
+          </button>
         </div>
       </div>
       <p className="mt-2 text-[10px] text-muted-foreground">

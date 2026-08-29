@@ -12,10 +12,15 @@ import {
   updateOperation,
   type QueuedOperation,
 } from "./offline-queue";
-import type { LocationSource, Severity, SosStatus } from "./domain";
+import {
+  isInsideAndhraPradesh,
+  type LocationSource,
+  type Severity,
+  type SosStatus,
+} from "./domain";
 
 type SosStatusValue = SosStatus;
-import { haversineKm } from "./geo";
+import { haversineKm, isValidCoordinate } from "./geo";
 
 export interface SosDraft {
   reporter_name: string | null;
@@ -116,6 +121,16 @@ export function looksDuplicate(existing: SosRow[], draft: SosDraft): SosRow | nu
 
 /** Queues the SOS locally first, then attempts transmission. */
 export async function submitSos(draft: SosDraft, userId: string): Promise<QueuedOperation> {
+  const hasLatitude = draft.latitude !== null;
+  const hasLongitude = draft.longitude !== null;
+  if (hasLatitude !== hasLongitude) throw new Error("Both latitude and longitude are required.");
+  if (
+    hasLatitude &&
+    (!isValidCoordinate(draft.latitude, draft.longitude) ||
+      !isInsideAndhraPradesh(draft.latitude!, draft.longitude!))
+  ) {
+    throw new Error("The emergency location must be within the Andhra Pradesh operating area.");
+  }
   const op: QueuedOperation = {
     id: newIdempotencyKey(),
     kind: "SOS",
@@ -132,6 +147,14 @@ export async function submitSos(draft: SosDraft, userId: string): Promise<Queued
   // operation. A second pass can transmit that notification immediately while
   // keeping SOS creation idempotent if the mail provider is unavailable.
   await flushQueue();
+  if (typeof navigator !== "undefined" && navigator.onLine) {
+    const { data: confirmed } = await supabase
+      .from("sos_requests")
+      .select("id")
+      .eq("idempotency_key", op.id)
+      .maybeSingle();
+    if (confirmed) return { ...op, state: "TRANSMITTED", serverId: confirmed.id };
+  }
   const [updated] = (await listQueue()).filter((q) => q.id === op.id);
   return updated ?? op;
 }

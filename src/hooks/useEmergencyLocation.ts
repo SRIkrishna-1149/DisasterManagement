@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { LocationSource } from "@/lib/domain";
+import { isInsideAndhraPradesh, type LocationSource } from "@/lib/domain";
 import { isValidCoordinate } from "@/lib/geo";
 
 export interface EmergencyLocation {
@@ -11,7 +11,8 @@ export interface EmergencyLocation {
   capturedAt: string;
 }
 
-export type LocationStatus = "idle" | "locating" | "ready" | "denied" | "unavailable";
+export type LocationStatus =
+  "idle" | "locating" | "ready" | "denied" | "unavailable" | "outside-region";
 
 export function useEmergencyLocation() {
   const [location, setLocation] = useState<EmergencyLocation | null>(null);
@@ -28,6 +29,10 @@ export function useEmergencyLocation() {
         const { latitude, longitude, accuracy } = position.coords;
         if (!isValidCoordinate(latitude, longitude)) {
           setStatus("unavailable");
+          return;
+        }
+        if (!isInsideAndhraPradesh(latitude, longitude)) {
+          setStatus("outside-region");
           return;
         }
         setLocation({
@@ -49,17 +54,20 @@ export function useEmergencyLocation() {
     request();
   }, [request]);
 
-  const setManual = useCallback((lat: number, lng: number, landmark: string | null, source: LocationSource) => {
-    setLocation({
-      lat,
-      lng,
-      source,
-      accuracyM: null,
-      landmark,
-      capturedAt: new Date().toISOString(),
-    });
-    setStatus("ready");
-  }, []);
+  const setManual = useCallback(
+    (lat: number, lng: number, landmark: string | null, source: LocationSource) => {
+      setLocation({
+        lat,
+        lng,
+        source,
+        accuracyM: null,
+        landmark,
+        capturedAt: new Date().toISOString(),
+      });
+      setStatus("ready");
+    },
+    [],
+  );
 
   return { location, status, request, setManual };
 }

@@ -64,6 +64,24 @@ export async function enqueue(op: QueuedOperation): Promise<void> {
   if (!isBrowser()) return;
   await tx(STORE, "readwrite", (s) => s.put(op));
   notify();
+  requestBackgroundSync();
+}
+
+/** Ask the service worker to wake the app when the browser supports Background Sync. */
+function requestBackgroundSync(): void {
+  if (!("serviceWorker" in navigator)) return;
+  void navigator.serviceWorker.ready
+    .then((registration) => {
+      const sync = (
+        registration as ServiceWorkerRegistration & {
+          sync?: { register: (tag: string) => Promise<void> };
+        }
+      ).sync;
+      return sync?.register("sentinel-emergency-sync");
+    })
+    .catch(() => {
+      // Online/reconnect listeners remain the supported fallback when Background Sync is absent.
+    });
 }
 
 export async function listQueue(): Promise<QueuedOperation[]> {

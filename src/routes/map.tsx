@@ -24,11 +24,12 @@ type ResourceRow = Tables<"emergency_resources">;
 type AlertRow = Tables<"alerts">;
 type SosRow = Tables<"sos_requests">;
 type TeamRow = Tables<"rescue_teams">;
+type ReportRow = Tables<"community_reports">;
 
 export const Route = createFileRoute("/map")({ component: MapRoute });
 
 function MapRoute() {
-  const { isOperator } = useAuth();
+  const { user, isOperator } = useAuth();
   const resources = useQuery({
     queryKey: ["map-resources"],
     queryFn: async () => {
@@ -97,6 +98,20 @@ function MapRoute() {
       return (data ?? []) as TeamRow[];
     },
   });
+  const reports = useQuery({
+    queryKey: ["map-reports", user?.id, isOperator],
+    enabled: !!user,
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from("community_reports")
+        .select("*")
+        .order("created_at", { ascending: false })
+        .limit(100);
+      if (error) throw error;
+      return (data ?? []) as ReportRow[];
+    },
+    staleTime: 60_000,
+  });
 
   const markers = useMemo<MapMarker[]>(
     () => [
@@ -158,8 +173,24 @@ function MapRoute() {
               ? ("LIVE" as const)
               : ("STALE" as const),
         })),
+      ...(reports.data ?? [])
+        .filter(
+          (row) =>
+            row.verification_status === "VERIFIED" &&
+            row.latitude !== null &&
+            row.longitude !== null,
+        )
+        .map((row) => ({
+          id: `report-${row.id}`,
+          kind: "report" as const,
+          label: row.report_type,
+          detail: `${row.severity} Â· verified community observation`,
+          lat: row.latitude!,
+          lng: row.longitude!,
+          quality: "RECENT" as const,
+        })),
     ],
-    [alerts.data, resources.data, risks.data, sos.data, teams.data],
+    [alerts.data, reports.data, resources.data, risks.data, sos.data, teams.data],
   );
   const incidentPoints = useMemo(
     () =>

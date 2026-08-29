@@ -11,6 +11,7 @@ import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
+import { flushQueue } from "../lib/sos-service";
 
 function NotFoundComponent() {
   return (
@@ -122,9 +123,14 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
 
   useEffect(() => {
+    const onServiceWorkerMessage = (event: MessageEvent) => {
+      if (event.data?.type === "sentinel-emergency-sync") void flushQueue();
+    };
+    navigator.serviceWorker?.addEventListener("message", onServiceWorkerMessage);
     if ("serviceWorker" in navigator) {
       void navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" });
     }
+    return () => navigator.serviceWorker?.removeEventListener("message", onServiceWorkerMessage);
   }, []);
 
   return (

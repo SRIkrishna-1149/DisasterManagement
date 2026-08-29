@@ -21,6 +21,15 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+self.addEventListener("sync", (event) => {
+  if (event.tag !== "sentinel-emergency-sync") return;
+  event.waitUntil(
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      clients.forEach((client) => client.postMessage({ type: "sentinel-emergency-sync" }));
+    }),
+  );
+});
+
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET" || new URL(request.url).origin !== self.location.origin) return;

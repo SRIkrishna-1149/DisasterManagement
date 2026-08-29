@@ -21,7 +21,7 @@ const NAV: NavItem[] = [
   { to: "/alerts", label: "Alerts", icon: "⚠" },
   { to: "/sos", label: "Send SOS", icon: "✚" },
   { to: "/resources", label: "Shelters", icon: "⌂" },
-  { to: "/reports", label: "Report", icon: "✎" },
+  { to: "/reports", label: "Reports", icon: "✎" },
   { to: "/rescue", label: "Operations", icon: "⛑", operatorOnly: true },
   { to: "/admin", label: "Command", icon: "▦", adminOnly: true },
 ];
@@ -59,7 +59,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   const items = NAV.filter(
     (item) => (!item.operatorOnly || isOperator) && (!item.adminOnly || isAdmin),
   ).filter((item, index, all) => all.findIndex((candidate) => candidate.to === item.to) === index);
-  const mobileItems = items.slice(0, 5);
+  // Keep every authorised destination reachable on mobile, including Reports
+  // and operator/admin workspaces. The nav itself scrolls instead of hiding a
+  // required destination at narrow widths.
+  const mobileItems = items;
 
   return (
     <div className="flex min-h-screen w-full flex-col lg:flex-row">
@@ -147,7 +150,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
         {/* Mobile bottom navigation — SOS always reachable */}
         <nav
-          className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-border bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden"
+          className="fixed inset-x-0 bottom-0 z-30 flex overflow-x-auto border-t border-border bg-surface/95 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden"
           aria-label="Primary"
         >
           {mobileItems.map((item) => (
@@ -155,7 +158,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               key={item.to}
               to={item.to}
               className={cn(
-                "flex min-h-16 flex-col items-center justify-center gap-1 text-[10px] font-semibold",
+                "flex min-h-16 min-w-16 flex-1 flex-col items-center justify-center gap-1 px-1 text-[10px] font-semibold",
                 item.to === "/sos" ? "text-destructive" : "text-muted-foreground",
                 pathname === item.to && "text-primary",
               )}

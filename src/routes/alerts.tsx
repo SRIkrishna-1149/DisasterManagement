@@ -2,24 +2,21 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Bell, Check, Clock3, MapPinned, ShieldAlert } from "lucide-react";
-import { AppShell } from "@/components/AppShell";
-import { AuthGate, PageFrame } from "@/components/portal";
+import { PageFrame } from "@/components/portal";
 import { Button, DataTag, EmptyState, ErrorState, Panel, SeverityBadge } from "@/components/kit";
 import { useAuth } from "@/hooks/useAuth";
-import { localTime, type AlertLevel, type Severity } from "@/lib/domain";
+import { FEATURE_FLAGS, localTime, type AlertLevel, type Severity } from "@/lib/domain";
+import { getDemoAlerts, type DemoAlert } from "@/lib/demo-data";
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
 
 type AlertRow = Tables<"alerts">;
+type DisplayAlert = AlertRow | DemoAlert;
 
 export const Route = createFileRoute("/alerts")({ component: AlertsRoute });
 
 function AlertsRoute() {
-  return (
-    <AppShell>
-      <AlertsContent />
-    </AppShell>
-  );
+  return <AlertsContent />;
 }
 
 function AlertsContent() {
@@ -55,7 +52,16 @@ function AlertsContent() {
     () => new Set((acknowledgements.data ?? []).map((item) => item.alert_id)),
     [acknowledgements.data],
   );
-  const rows = (alerts.data ?? []).filter((alert) => filter === "ALL" || alert.level === filter);
+  const persistedRows = alerts.data ?? [];
+  const showingDemo =
+    FEATURE_FLAGS.ENABLE_DEMO_MODE && !alerts.isError && persistedRows.length === 0;
+  const rows: DisplayAlert[] = (showingDemo ? getDemoAlerts() : persistedRows).filter(
+    (alert) => filter === "ALL" || alert.level === filter,
+  );
+
+  function isDemoAlert(alert: DisplayAlert): alert is DemoAlert {
+    return "simulated" in alert;
+  }
 
   async function acknowledge(alertId: string) {
     if (!user) return;
@@ -80,7 +86,7 @@ function AlertsContent() {
     <PageFrame
       eyebrow="Public safety / alerts"
       title="Emergency alerts"
-      description="Approved notices for the response area. Delivery state is shown as recorded; creation never means a notification was delivered."
+      description="Approved notices for the response area. When the database has no notices, this page shows clearly labelled simulated AP demo data."
       actions={
         <Link to="/map">
           <Button>
@@ -131,8 +137,8 @@ function AlertsContent() {
                 </div>
                 <DataTag
                   quality={
-                    alert.delivery_status === "DELIVERED"
-                      ? "LIVE"
+                    isDemoAlert(alert)
+                      ? "SIMULATED"
                       : alert.delivery_status === "FAILED"
                         ? "UNAVAILABLE"
                         : "RECENT"
@@ -140,6 +146,11 @@ function AlertsContent() {
                 />
               </div>
               <h2 className="mt-4 text-xl font-bold">{alert.title}</h2>
+              {isDemoAlert(alert) && (
+                <p className="mt-2 font-mono text-[10px] font-bold tracking-wider text-accent uppercase">
+                  Simulated demo notice · not a live emergency alert
+                </p>
+              )}
               <p className="mt-2 text-sm leading-6 text-muted-foreground">{alert.message}</p>
               {alert.recommended_action && (
                 <div className="mt-4 rounded-lg border border-accent/30 bg-accent/10 p-3 text-sm">
@@ -161,9 +172,11 @@ function AlertsContent() {
               </div>
               <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
                 <span className="font-mono text-[10px] tracking-wider text-muted-foreground uppercase">
-                  Notification: {alert.delivery_status}
+                  {isDemoAlert(alert)
+                    ? "Source: SIMULATED DEMO"
+                    : `Notification: ${alert.delivery_status}`}
                 </span>
-                {isOperator && (
+                {isOperator && !isDemoAlert(alert) && (
                   <Button
                     size="sm"
                     variant={acked.has(alert.id) ? "success" : "outline"}
