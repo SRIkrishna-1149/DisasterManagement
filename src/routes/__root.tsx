@@ -127,7 +127,24 @@ function RootComponent() {
       if (event.data?.type === "sentinel-emergency-sync") void flushQueue();
     };
     navigator.serviceWorker?.addEventListener("message", onServiceWorkerMessage);
-    if ("serviceWorker" in navigator) {
+    if (import.meta.env.DEV && "serviceWorker" in navigator) {
+      void navigator.serviceWorker
+        .getRegistrations()
+        .then((registrations) =>
+          Promise.all(registrations.map((registration) => registration.unregister())),
+        );
+      if ("caches" in globalThis) {
+        void caches
+          .keys()
+          .then((keys) =>
+            Promise.all(
+              keys
+                .filter((key) => key.startsWith("sentinel-shell-"))
+                .map((key) => caches.delete(key)),
+            ),
+          );
+      }
+    } else if ("serviceWorker" in navigator) {
       void navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" });
     }
     return () => navigator.serviceWorker?.removeEventListener("message", onServiceWorkerMessage);

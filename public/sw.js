@@ -1,4 +1,4 @@
-const CACHE_NAME = "sentinel-shell-v1";
+const CACHE_NAME = "sentinel-shell-v2";
 const SHELL = ["/", "/manifest.webmanifest", "/favicon.ico"];
 
 self.addEventListener("install", (event) => {
@@ -33,6 +33,15 @@ self.addEventListener("sync", (event) => {
 self.addEventListener("fetch", (event) => {
   const request = event.request;
   if (request.method !== "GET" || new URL(request.url).origin !== self.location.origin) return;
+  // Never serve a cached HTML document after a deployment. The document
+  // contains the current route/module graph and must match the current React
+  // runtime. The cached shell is used only as an offline navigation fallback.
+  if (request.mode === "navigate") {
+    event.respondWith(
+      fetch(request).catch(() => caches.match("/").then((cached) => cached || Response.error())),
+    );
+    return;
+  }
   // Only cache the public shell and static assets. Supabase responses and user
   // emergency data are deliberately never cached by the service worker.
   event.respondWith(
