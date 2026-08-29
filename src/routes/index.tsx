@@ -22,7 +22,7 @@ import {
 import { OperationsMap, type MapMarker } from "@/components/map-panel";
 import { QuickSosDialog } from "@/components/quick-sos";
 import { useAuth } from "@/hooks/useAuth";
-import { FEATURE_FLAGS, localTime } from "@/lib/domain";
+import { AP_CENTER, FEATURE_FLAGS, localTime } from "@/lib/domain";
 import type { Tables } from "@/integrations/supabase/types";
 import { ruleBasedEngine, simulatedReading } from "@/lib/risk-engine";
 import { supabase } from "@/integrations/supabase/client";
