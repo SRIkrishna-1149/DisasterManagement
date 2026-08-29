@@ -1,4 +1,4 @@
-project_id = "rgkbxikmxkgzwqgtoujx"
+project_id = "zcxtzdzxojimvnwiwliq"
 
 [functions.notify-rescue]
 verify_jwt = true
