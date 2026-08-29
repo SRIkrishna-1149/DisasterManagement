@@ -230,15 +230,48 @@ export const LOCATION_CONFIDENCE: Record<LocationSource, { label: string; confid
   LANDMARK: { label: "Landmark", confidence: "APPROXIMATE" },
 };
 
+/**
+ * Operating region: Andhra Pradesh, India. All demo geography must stay inside
+ * these bounds — nothing outside AP is generated or displayed.
+ */
+export const AP_BOUNDS = {
+  minLat: 12.62,
+  maxLat: 19.92,
+  minLng: 76.75,
+  maxLng: 84.8,
+} as const;
+
+/** Default operational focus — Krishna district / Vijayawada. */
+export const AP_CENTER = { lat: 16.5062, lng: 80.648 } as const;
+
+/** Default viewport for the operations map (Krishna–Guntur corridor). */
+export const AP_DEFAULT_VIEWPORT = {
+  minLat: 16.18,
+  maxLat: 16.72,
+  minLng: 80.28,
+  maxLng: 80.86,
+} as const;
+
+export function isInsideAndhraPradesh(lat: number, lng: number): boolean {
+  return (
+    lat >= AP_BOUNDS.minLat &&
+    lat <= AP_BOUNDS.maxLat &&
+    lng >= AP_BOUNDS.minLng &&
+    lng <= AP_BOUNDS.maxLng
+  );
+}
+
 export const LANDMARKS = [
-  { name: "Central Community School", lat: 12.9738, lng: 77.5975 },
-  { name: "City General Hospital", lat: 12.965, lng: 77.59 },
-  { name: "Main Bus Station", lat: 12.9772, lng: 77.5721 },
-  { name: "District Government Office", lat: 12.9698, lng: 77.5865 },
-  { name: "Riverside Temple", lat: 12.9805, lng: 77.6088 },
-  { name: "Hilltop Park Safe Zone", lat: 13.005, lng: 77.605 },
-  { name: "North Ring Road Junction", lat: 12.995, lng: 77.58 },
+  { name: "Vijayawada Railway Station", lat: 16.5175, lng: 80.6194 },
+  { name: "Government General Hospital, Vijayawada", lat: 16.515, lng: 80.63 },
+  { name: "Kanaka Durga Temple, Indrakeeladri", lat: 16.5133, lng: 80.6083 },
+  { name: "Pandit Nehru Bus Station, Vijayawada", lat: 16.5107, lng: 80.6255 },
+  { name: "Krishna District Collectorate", lat: 16.5085, lng: 80.6205 },
+  { name: "Prakasam Barrage, Krishna River", lat: 16.4993, lng: 80.6094 },
+  { name: "Guntur Municipal Corporation Office", lat: 16.3067, lng: 80.4365 },
+  { name: "Amaravati Secretariat Junction", lat: 16.573, lng: 80.358 },
 ] as const;
+
 
 export const FEATURE_FLAGS = {
   ENABLE_LIVE_WEATHER: false,
