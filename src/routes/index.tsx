@@ -92,32 +92,33 @@ function HomeRoute() {
     {
       id: "risk-center",
       kind: "risk",
-      label: "Central response zone",
-      detail: "Rule-based area assessment",
-      lat: 12.9716,
-      lng: 77.5946,
+      label: "Vijayawada response zone",
+      detail: "Rule-based area assessment · Krishna district",
+      lat: AP_CENTER.lat,
+      lng: AP_CENTER.lng,
       score: assessment.score,
       quality: "SIMULATED",
     },
     {
       id: "shelter",
       kind: "resource",
-      label: "Central Community Shelter",
+      label: "Vijayawada Municipal Shelter",
       detail: "ACTIVE · 280 spaces estimated",
-      lat: 12.9716,
-      lng: 77.5946,
+      lat: 16.5062,
+      lng: 80.648,
       quality: "CACHED",
     },
     {
       id: "hospital",
       kind: "resource",
-      label: "City General Hospital",
+      label: "Government General Hospital Vijayawada",
       detail: "ACTIVE · verify capacity before travel",
-      lat: 12.965,
-      lng: 77.59,
+      lat: 16.515,
+      lng: 80.63,
       quality: "CACHED",
     },
   ];
+
 
   return (
     <AppShell>
