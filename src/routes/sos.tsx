@@ -314,7 +314,7 @@ function SosForm() {
                     inputMode="decimal"
                     value={manualLat}
                     onChange={(event) => setManualLat(event.target.value)}
-                    placeholder="12.9716"
+                    placeholder="16.5062"
                   />
                 </Field>
                 <Field label="Longitude">
@@ -323,7 +323,7 @@ function SosForm() {
                     inputMode="decimal"
                     value={manualLng}
                     onChange={(event) => setManualLng(event.target.value)}
-                    placeholder="77.5946"
+                    placeholder="80.6480"
                   />
                 </Field>
                 <Button type="button" size="sm" onClick={useManualLocation}>
