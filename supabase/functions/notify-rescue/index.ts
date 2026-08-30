@@ -13,7 +13,7 @@ function json(body: Record<string, unknown>, status = 200) {
 }
 function escapeHtml(value: unknown) {
   return String(value ?? "").replace(
-    /[&<>\"']/g,
+    /[&<>"']/g,
     (character) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ??
       character,

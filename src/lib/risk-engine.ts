@@ -44,7 +44,10 @@ export interface EnvironmentReading {
 export interface RiskEngine {
   readonly id: string;
   assess(reading: EnvironmentReading, disasterType: string): RiskAssessment;
-  forecast(reading: EnvironmentReading, disasterType: string): { offsetHours: number; assessment: RiskAssessment }[];
+  forecast(
+    reading: EnvironmentReading,
+    disasterType: string,
+  ): { offsetHours: number; assessment: RiskAssessment }[];
 }
 
 const WEIGHTS = {
@@ -117,7 +120,10 @@ export const ruleBasedEngine: RiskEngine = {
       },
     ];
 
-    const score = Math.min(100, factors.reduce((s, f) => s + f.points, 0));
+    const score = Math.min(
+      100,
+      factors.reduce((s, f) => s + f.points, 0),
+    );
     return {
       score,
       level: riskLevel(score),

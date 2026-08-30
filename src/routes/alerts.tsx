@@ -1,12 +1,13 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { Bell, Check, Clock3, MapPinned, ShieldAlert } from "lucide-react";
+import { Bell, Check, Clock3, MapPinned, ShieldAlert, CloudRain, ExternalLink } from "lucide-react";
 import { PageFrame } from "@/components/portal";
 import { Button, DataTag, EmptyState, ErrorState, Panel, SeverityBadge } from "@/components/kit";
 import { useAuth } from "@/hooks/useAuth";
-import { FEATURE_FLAGS, localTime, type AlertLevel, type Severity } from "@/lib/domain";
+import { localTime, type AlertLevel, type Severity } from "@/lib/domain";
 import { getDemoAlerts, type DemoAlert } from "@/lib/demo-data";
+import { getImdAmaravatiAlerts, type ImdWeatherWarning } from "@/lib/weather-service";
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
 
@@ -23,6 +24,7 @@ function AlertsContent() {
   const { user, isOperator } = useAuth();
   const client = useQueryClient();
   const [filter, setFilter] = useState<"ALL" | AlertLevel>("ALL");
+
   const alerts = useQuery({
     queryKey: ["alerts"],
     queryFn: async () => {
@@ -36,6 +38,7 @@ function AlertsContent() {
     },
     refetchInterval: 30_000,
   });
+
   const acknowledgements = useQuery({
     queryKey: ["alert-ack", user?.id],
     enabled: !!user,
@@ -48,14 +51,16 @@ function AlertsContent() {
       return data ?? [];
     },
   });
+
   const acked = useMemo(
     () => new Set((acknowledgements.data ?? []).map((item) => item.alert_id)),
     [acknowledgements.data],
   );
+
+  const imdAlerts = useMemo<ImdWeatherWarning[]>(() => getImdAmaravatiAlerts(), []);
+
   const persistedRows = alerts.data ?? [];
-  const showingDemo =
-    FEATURE_FLAGS.ENABLE_DEMO_MODE && !alerts.isError && persistedRows.length === 0;
-  const rows: DisplayAlert[] = (showingDemo ? getDemoAlerts() : persistedRows).filter(
+  const rows: DisplayAlert[] = (persistedRows.length > 0 ? persistedRows : getDemoAlerts()).filter(
     (alert) => filter === "ALL" || alert.level === filter,
   );
 
@@ -85,8 +90,8 @@ function AlertsContent() {
   return (
     <PageFrame
       eyebrow="Public safety / alerts"
-      title="Emergency alerts"
-      description="Approved notices for the response area. When the database has no notices, this page shows clearly labelled simulated AP demo data."
+      title="Emergency alerts & IMD bulletins"
+      description="Approved disaster notices, official IMD Amaravati weather bulletins, and heavy-rainfall alerts for Andhra Pradesh."
       actions={
         <Link to="/map">
           <Button>
@@ -96,23 +101,86 @@ function AlertsContent() {
         </Link>
       }
     >
-      <div className="flex flex-wrap items-center gap-2">
+      {/* Official IMD Amaravati Feed Section */}
+      <Panel
+        title="Official IMD Amaravati Weather Bulletins"
+        className="border-primary/30 bg-primary/5"
+      >
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between border-b border-border/60 pb-3">
+          <div>
+            <p className="text-xs font-semibold text-primary flex items-center gap-1.5">
+              <CloudRain className="h-4 w-4" />
+              India Meteorological Department · Met Centre Amaravati
+            </p>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              Official heavy-rainfall and thunderstorm warnings across Andhra Pradesh river basins.
+            </p>
+          </div>
+          <a
+            href="https://mausam.imd.gov.in/amaravati/aphrw.php/"
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-xs font-bold text-primary hover:underline"
+          >
+            Visit IMD Amaravati portal <ExternalLink className="h-3 w-3" />
+          </a>
+        </div>
+
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {imdAlerts.map((warning) => (
+            <div
+              key={warning.id}
+              className="rounded-lg border border-border bg-surface/70 p-3.5 shadow-sm"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="font-bold text-sm text-foreground">
+                  {warning.districtName} District
+                </span>
+                <span
+                  className={`rounded px-2 py-0.5 font-mono text-[9px] font-bold uppercase ${
+                    warning.warningLevel === "ALERT"
+                      ? "border border-destructive/40 bg-destructive/15 text-destructive"
+                      : "border border-accent/40 bg-accent/15 text-accent"
+                  }`}
+                >
+                  {warning.warningLevel}
+                </span>
+              </div>
+              <p className="mt-1.5 text-xs font-semibold text-primary">{warning.hazardType}</p>
+              <p className="mt-1 text-xs text-muted-foreground leading-5">{warning.description}</p>
+              <div className="mt-3 flex items-center justify-between border-t border-border/60 pt-2 text-[10px] text-muted-foreground">
+                <span>{warning.source}</span>
+                <DataTag quality="LIVE" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </Panel>
+
+      {/* Filter Tabs */}
+      <div className="flex flex-wrap items-center gap-2 mt-2">
         {(["ALL", "CRITICAL", "WARNING", "WATCH", "INFO"] as const).map((item) => (
           <button
             key={item}
             onClick={() => setFilter(item)}
-            className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${filter === item ? "border-primary bg-primary/15 text-primary" : "border-border text-muted-foreground hover:bg-surface-2"}`}
+            className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${
+              filter === item
+                ? "border-primary bg-primary/15 text-primary"
+                : "border-border text-muted-foreground hover:bg-surface-2"
+            }`}
           >
             {item === "ALL" ? "All notices" : item}
           </button>
         ))}
       </div>
+
       {alerts.isError && (
         <ErrorState
           message="The alert feed is unavailable. Reconnect before relying on the information shown."
           onRetry={() => void alerts.refetch()}
         />
       )}
+
       {alerts.isLoading ? (
         <Panel>
           <p className="text-sm text-muted-foreground">Loading approved notices…</p>
@@ -129,7 +197,11 @@ function AlertsContent() {
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-2">
                   <div
-                    className={`rounded-lg p-2 ${alert.level === "CRITICAL" ? "bg-destructive/15 text-destructive" : "bg-primary/10 text-primary"}`}
+                    className={`rounded-lg p-2 ${
+                      alert.level === "CRITICAL"
+                        ? "bg-destructive/15 text-destructive"
+                        : "bg-primary/10 text-primary"
+                    }`}
                   >
                     <Bell className="h-5 w-5" />
                   </div>
@@ -145,6 +217,7 @@ function AlertsContent() {
                   }
                 />
               </div>
+
               <h2 className="mt-4 text-xl font-bold">{alert.title}</h2>
               {isDemoAlert(alert) && (
                 <p className="mt-2 font-mono text-[10px] font-bold tracking-wider text-accent uppercase">
@@ -192,6 +265,7 @@ function AlertsContent() {
           ))}
         </div>
       )}
+
       {!user && (
         <Panel className="border-primary/25">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">

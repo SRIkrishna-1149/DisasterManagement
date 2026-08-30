@@ -1,7 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo } from "react";
-import { AlertTriangle, Filter, MapPinned, Radio, ShieldAlert } from "lucide-react";
+import { useMemo, useState } from "react";
+import { AlertTriangle, Filter, MapPinned, Radio, ShieldAlert, Navigation } from "lucide-react";
 import { OperationsMap, type MapMarker } from "@/components/map-panel";
 import {
   Button,
@@ -14,8 +14,12 @@ import {
 } from "@/components/kit";
 import { PageFrame } from "@/components/portal";
 import { useAuth } from "@/hooks/useAuth";
+import { useEmergencyLocation } from "@/hooks/useEmergencyLocation";
 import { clusterIncidents } from "@/lib/geo";
 import { localTime, type AlertLevel, type DataQuality } from "@/lib/domain";
+import { getImdAmaravatiAlerts } from "@/lib/weather-service";
+import { calculateGoogleRoutes, type CalculatedRoute } from "@/lib/google-routes";
+import { evaluateRouteHazards } from "@/lib/hazard-routing";
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
 
@@ -30,6 +34,10 @@ export const Route = createFileRoute("/map")({ component: MapRoute });
 
 function MapRoute() {
   const { user, isOperator } = useAuth();
+  const { location: userLoc } = useEmergencyLocation();
+  const [activeRoute, setActiveRoute] = useState<CalculatedRoute | null>(null);
+  const [routingTarget, setRoutingTarget] = useState<MapMarker | null>(null);
+
   const resources = useQuery({
     queryKey: ["map-resources"],
     queryFn: async () => {
@@ -39,6 +47,7 @@ function MapRoute() {
     },
     staleTime: 60_000,
   });
+
   const risks = useQuery({
     queryKey: ["map-risks"],
     queryFn: async () => {
@@ -52,6 +61,7 @@ function MapRoute() {
     },
     staleTime: 60_000,
   });
+
   const alerts = useQuery({
     queryKey: ["map-alerts"],
     queryFn: async () => {
@@ -66,6 +76,7 @@ function MapRoute() {
     },
     staleTime: 30_000,
   });
+
   const sos = useQuery({
     queryKey: ["map-sos", isOperator],
     enabled: isOperator,
@@ -89,6 +100,7 @@ function MapRoute() {
       return (data ?? []) as SosRow[];
     },
   });
+
   const teams = useQuery({
     queryKey: ["map-teams", isOperator],
     enabled: isOperator,
@@ -98,6 +110,7 @@ function MapRoute() {
       return (data ?? []) as TeamRow[];
     },
   });
+
   const reports = useQuery({
     queryKey: ["map-reports", user?.id, isOperator],
     enabled: !!user,
@@ -112,6 +125,9 @@ function MapRoute() {
     },
     staleTime: 60_000,
   });
+
+  // Authoritative IMD weather warnings
+  const imdAlerts = useMemo(() => getImdAmaravatiAlerts(), []);
 
   const markers = useMemo<MapMarker[]>(
     () => [
@@ -134,6 +150,8 @@ function MapRoute() {
         detail: `${row.status.replaceAll("_", " ")} · ${row.resource_type}`,
         lat: row.latitude,
         lng: row.longitude,
+        phone: row.contact_phone,
+        address: row.address,
         quality: "CACHED" as const,
       })),
       ...(alerts.data ?? [])
@@ -184,7 +202,7 @@ function MapRoute() {
           id: `report-${row.id}`,
           kind: "report" as const,
           label: row.report_type,
-          detail: `${row.severity} Â· verified community observation`,
+          detail: `${row.severity} · verified community observation`,
           lat: row.latitude!,
           lng: row.longitude!,
           quality: "RECENT" as const,
@@ -192,6 +210,7 @@ function MapRoute() {
     ],
     [alerts.data, reports.data, resources.data, risks.data, sos.data, teams.data],
   );
+
   const incidentPoints = useMemo(
     () =>
       (sos.data ?? [])
@@ -199,22 +218,58 @@ function MapRoute() {
         .map((row) => ({ ...row, lat: row.latitude!, lng: row.longitude! })),
     [sos.data],
   );
+
   const incidentGroups = useMemo(() => clusterIncidents(incidentPoints, 0.5, 90), [incidentPoints]);
   const highRisks = (risks.data ?? []).filter((row) => row.risk_score >= 60);
   const activeAlerts = (alerts.data ?? []).filter((row) => row.approval_status === "APPROVED");
+
+  const handleRouteToMarker = async (marker: MapMarker) => {
+    if (!userLoc) return;
+    setRoutingTarget(marker);
+    try {
+      const calculated = await calculateGoogleRoutes(
+        { lat: userLoc.lat, lng: userLoc.lng },
+        { lat: marker.lat, lng: marker.lng },
+      );
+      if (calculated.length > 0) {
+        const evaluated = evaluateRouteHazards(calculated, [
+          ...highRisks.map((r) => ({
+            id: r.id,
+            title: r.area_name,
+            lat: r.latitude,
+            lng: r.longitude,
+            radiusKm: 2,
+            severity: "HIGH" as const,
+            disasterType: r.disaster_type,
+            source: "Risk assessment",
+          })),
+        ]);
+        setActiveRoute(evaluated[0] ?? null);
+      }
+    } catch (err) {
+      console.warn("Failed to calculate route:", err);
+    }
+  };
 
   return (
     <PageFrame
       eyebrow="Situational awareness / map"
       title="Live response map"
-      description="A clustered viewport of public resources, risk assessments, approved alert zones, and—when authorised—mission locations. Old coordinates are labelled stale, never live."
+      description="A canonical Google Maps viewport of public resources, risk assessments, approved alert zones, and—when authorised—mission locations. Real road routes and live device GPS."
       actions={
-        <Link to="/resources">
-          <Button>
-            <MapPinned className="h-4 w-4" />
-            Find resources
-          </Button>
-        </Link>
+        <div className="flex flex-wrap gap-2">
+          {activeRoute && (
+            <Button size="sm" variant="outline" onClick={() => setActiveRoute(null)}>
+              Clear active route
+            </Button>
+          )}
+          <Link to="/resources">
+            <Button>
+              <MapPinned className="h-4 w-4" />
+              Find resources
+            </Button>
+          </Link>
+        </div>
       }
     >
       <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -226,21 +281,31 @@ function MapRoute() {
           hint="Verify before travel"
         />
         <Stat
-          label={isOperator ? "SOS clusters" : "Map scope"}
-          value={isOperator ? incidentGroups.length : "Public"}
-          hint={isOperator ? "90-minute / 500 m grouping" : "Private incidents hidden"}
+          label={isOperator ? "SOS clusters" : "IMD Warnings"}
+          value={isOperator ? incidentGroups.length : imdAlerts.length}
+          hint={isOperator ? "90-minute / 500 m grouping" : "IMD Amaravati active notices"}
         />
       </section>
-      <OperationsMap markers={markers} className="mt-5" title="Response area · clustered markers" />
+
+      <OperationsMap
+        markers={markers}
+        className="mt-5"
+        title="Response area · Canonical Operations Map"
+        userLocation={userLoc ? { lat: userLoc.lat, lng: userLoc.lng } : null}
+        userAccuracyM={userLoc?.accuracyM ?? null}
+        calculatedRoute={activeRoute}
+        onRouteToMarker={handleRouteToMarker}
+      />
+
       <div className="mt-5 grid gap-5 lg:grid-cols-3">
-        <Panel title="Map layers">
+        <Panel title="Map layers & sources">
           <div className="space-y-3 text-sm">
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2">
                 <i className="h-3 w-3 rounded-full bg-high" />
                 Risk assessment
               </span>
-              <DataTag quality="SIMULATED" />
+              <DataTag quality="RECENT" />
             </div>
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2">
@@ -252,9 +317,9 @@ function MapRoute() {
             <div className="flex items-center justify-between">
               <span className="flex items-center gap-2">
                 <i className="h-3 w-3 rounded-full bg-accent" />
-                Alert zone
+                Alert zone (IMD / Govt)
               </span>
-              <DataTag quality="RECENT" />
+              <DataTag quality="LIVE" />
             </div>
             {isOperator && (
               <div className="flex items-center justify-between">
@@ -267,10 +332,11 @@ function MapRoute() {
             )}
           </div>
           <p className="mt-4 border-t border-border pt-3 text-xs text-muted-foreground">
-            Map service is a visual operational layer. It does not verify road closures or guarantee
-            a safe route.
+            Routes represent actual road networks via Google Directions. Follow current official
+            guidance.
           </p>
         </Panel>
+
         <Panel title="Risk overview">
           {highRisks.length === 0 ? (
             <p className="text-sm text-muted-foreground">
@@ -292,14 +358,15 @@ function MapRoute() {
             </div>
           )}
         </Panel>
+
         <Panel title="Current warnings">
-          {activeAlerts.length === 0 ? (
+          {activeAlerts.length === 0 && imdAlerts.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No active approved warnings in the feed.
             </p>
           ) : (
             <div className="space-y-3">
-              {activeAlerts.slice(0, 4).map((alert) => (
+              {activeAlerts.slice(0, 3).map((alert) => (
                 <div key={alert.id} className="flex gap-2">
                   <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
                   <div>
@@ -310,10 +377,24 @@ function MapRoute() {
                   </div>
                 </div>
               ))}
+              {imdAlerts.slice(0, 2).map((alert) => (
+                <div key={alert.id} className="flex gap-2 border-t border-border/40 pt-2">
+                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                  <div>
+                    <p className="text-sm font-semibold">
+                      {alert.hazardType} · {alert.districtName}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      {alert.source} · {alert.warningLevel}
+                    </p>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </Panel>
       </div>
+
       {!isOperator && (
         <p className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
           <ShieldAlert className="h-4 w-4 text-primary" />

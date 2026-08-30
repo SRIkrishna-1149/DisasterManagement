@@ -1,218 +1,486 @@
-import { useCallback, useMemo, useRef, useState } from "react";
-import { Crosshair, Layers, Minus, Plus, RotateCcw } from "lucide-react";
-import { MapPin } from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+  Component,
+  type ErrorInfo,
+} from "react";
+import {
+  Crosshair,
+  Layers,
+  MapPin,
+  Maximize2,
+  Minimize2,
+  Navigation,
+  Phone,
+  RotateCcw,
+  ShieldAlert,
+  Compass,
+} from "lucide-react";
+import { MarkerClusterer } from "@googlemaps/markerclusterer";
 import { cn } from "@/lib/utils";
-import { clusterPoints, type LatLng } from "@/lib/geo";
-import { AP_BOUNDS, AP_CENTER, isInsideAndhraPradesh } from "@/lib/domain";
-import { DataTag, Panel } from "./kit";
+import { type LatLng, haversineKm } from "@/lib/geo";
+import { AP_BOUNDS, AP_CENTER, isInsideAndhraPradesh, type DataQuality } from "@/lib/domain";
+import { loadGoogleMaps, isGoogleMapsConfigured } from "@/lib/google-maps-loader";
+import type { CalculatedRoute } from "@/lib/google-routes";
+import { DataTag, Panel, Button } from "./kit";
 
 export interface MapMarker extends LatLng {
   id: string;
   label: string;
   kind: "risk" | "resource" | "sos" | "team" | "alert" | "report";
   detail?: string;
-  quality?: "LIVE" | "RECENT" | "STALE" | "CACHED" | "SIMULATED" | "UNAVAILABLE";
+  quality?: DataQuality;
   score?: number;
+  phone?: string | null;
+  address?: string | null;
+  isOpen?: boolean | null;
+  sourceUrl?: string | null;
 }
 
-/** The supplied map asset covers the complete configured Andhra Pradesh region. */
-const BASE = AP_BOUNDS;
-const BASE_LAT_SPAN = BASE.maxLat - BASE.minLat;
-const BASE_LNG_SPAN = BASE.maxLng - BASE.minLng;
-
-/**
- * Transparent padding in the supplied PNG was measured from the source asset.
- * Mapping its non-transparent bounds to AP_BOUNDS keeps pins aligned with the
- * geographic map while retaining the asset's original transparent margins.
- */
-const AP_MAP_ASSET = {
-  src: "/maps/andhra-pradesh-assembly-constituencies.png",
-  width: 1480,
-  height: 1214,
-  alphaBounds: { minX: 128, minY: 66, maxX: 1445, maxY: 1186 },
+const KIND_STYLE: Record<
+  MapMarker["kind"],
+  { bg: string; text: string; ring: string; icon: string; label: string }
+> = {
+  resource: {
+    bg: "#10b981",
+    text: "#ffffff",
+    ring: "rgba(16, 185, 129, 0.3)",
+    icon: "✚",
+    label: "Shelters & hospitals",
+  },
+  risk: {
+    bg: "#f59e0b",
+    text: "#000000",
+    ring: "rgba(245, 158, 11, 0.3)",
+    icon: "⚠",
+    label: "Hazard & risk zones",
+  },
+  sos: {
+    bg: "#ef4444",
+    text: "#ffffff",
+    ring: "rgba(239, 68, 68, 0.4)",
+    icon: "⚡",
+    label: "SOS requests",
+  },
+  team: {
+    bg: "#0ea5e9",
+    text: "#ffffff",
+    ring: "rgba(14, 165, 233, 0.3)",
+    icon: "◆",
+    label: "Rescue teams",
+  },
+  alert: {
+    bg: "#f97316",
+    text: "#ffffff",
+    ring: "rgba(249, 115, 22, 0.3)",
+    icon: "!",
+    label: "Official alerts",
+  },
+  report: {
+    bg: "#8b5cf6",
+    text: "#ffffff",
+    ring: "rgba(139, 92, 246, 0.3)",
+    icon: "✎",
+    label: "Verified observations",
+  },
 };
 
-const AP_MAP_ALPHA_WIDTH = AP_MAP_ASSET.alphaBounds.maxX - AP_MAP_ASSET.alphaBounds.minX;
-const AP_MAP_ALPHA_HEIGHT = AP_MAP_ASSET.alphaBounds.maxY - AP_MAP_ASSET.alphaBounds.minY;
+// Subtle dark-mode styling for emergency operations readability
+const MAP_STYLES: google.maps.MapTypeStyle[] = [
+  { elementType: "geometry", stylers: [{ color: "#111c24" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#111c24" }] },
+  { elementType: "labels.text.fill", stylers: [{ color: "#8ca3b8" }] },
+  {
+    featureType: "administrative.locality",
+    elementType: "labels.text.fill",
+    stylers: [{ color: "#d1d5db" }],
+  },
+  { featureType: "poi", elementType: "labels.text.fill", stylers: [{ color: "#748ba0" }] },
+  { featureType: "poi.park", elementType: "geometry", stylers: [{ color: "#172932" }] },
+  { featureType: "road", elementType: "geometry", stylers: [{ color: "#1f3340" }] },
+  { featureType: "road", elementType: "geometry.stroke", stylers: [{ color: "#16252e" }] },
+  { featureType: "road", elementType: "labels.text.fill", stylers: [{ color: "#9ca3af" }] },
+  { featureType: "road.highway", elementType: "geometry", stylers: [{ color: "#2d4a5d" }] },
+  { featureType: "road.highway", elementType: "geometry.stroke", stylers: [{ color: "#1d3240" }] },
+  { featureType: "transit", elementType: "geometry", stylers: [{ color: "#1e3341" }] },
+  { featureType: "water", elementType: "geometry", stylers: [{ color: "#0a141b" }] },
+  { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#38bdf8" }] },
+];
 
-const MIN_ZOOM = 0.6;
-const MAX_ZOOM = 12;
-
-const KIND_STYLE: Record<MapMarker["kind"], string> = {
-  risk: "bg-high text-background ring-high/30",
-  resource: "bg-safe text-background ring-safe/30",
-  sos: "bg-destructive text-destructive-foreground ring-destructive/30",
-  team: "bg-primary text-background ring-primary/30",
-  alert: "bg-accent text-background ring-accent/30",
-  report: "bg-moderate text-background ring-moderate/30",
-};
-
-const KIND_LABEL: Record<MapMarker["kind"], string> = {
-  risk: "Risk zones",
-  resource: "Shelters & hospitals",
-  sos: "SOS requests",
-  team: "Rescue teams",
-  alert: "Alerts",
-  report: "Verified community reports",
-};
-
-const UNAVAILABLE_LAYER_LABELS = ["Weather", "Rainfall", "Water level"] as const;
-
-interface View {
-  centerLat: number;
-  centerLng: number;
-  zoom: number;
-}
-
-const DEFAULT_VIEW: View = {
-  centerLat: AP_CENTER.lat,
-  centerLng: AP_CENTER.lng,
-  zoom: 1,
-};
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, value));
-}
-
-/** Keep the visible operational viewport inside the configured AP operating bounds. */
-function clampView(view: View): View {
-  const latSpan = BASE_LAT_SPAN / view.zoom;
-  const lngSpan = BASE_LNG_SPAN / view.zoom;
-  const latHalf = Math.min(latSpan / 2, (AP_BOUNDS.maxLat - AP_BOUNDS.minLat) / 2);
-  const lngHalf = Math.min(lngSpan / 2, (AP_BOUNDS.maxLng - AP_BOUNDS.minLng) / 2);
-  return {
-    ...view,
-    centerLat: clamp(view.centerLat, AP_BOUNDS.minLat + latHalf, AP_BOUNDS.maxLat - latHalf),
-    centerLng: clamp(view.centerLng, AP_BOUNDS.minLng + lngHalf, AP_BOUNDS.maxLng - lngHalf),
-  };
-}
-
-function viewportOf(view: View) {
-  const latSpan = BASE_LAT_SPAN / view.zoom;
-  const lngSpan = BASE_LNG_SPAN / view.zoom;
-  return {
-    minLat: view.centerLat - latSpan / 2,
-    maxLat: view.centerLat + latSpan / 2,
-    minLng: view.centerLng - lngSpan / 2,
-    maxLng: view.centerLng + lngSpan / 2,
-    latSpan,
-    lngSpan,
-  };
-}
-
-export function OperationsMap({
-  markers,
-  className,
-  title = "Andhra Pradesh operations map",
-  route,
-  routeLabel = "SIMULATED ROUTE",
-  pin,
-  onMapClick,
-}: {
-  markers: MapMarker[];
+interface OperationsMapProps {
+  markers?: MapMarker[];
   className?: string;
   title?: string;
   route?: LatLng[];
+  calculatedRoute?: CalculatedRoute | null;
   routeLabel?: string;
   pin?: LatLng;
+  userLocation?: LatLng | null;
+  userAccuracyM?: number | null;
   onMapClick?: (point: LatLng) => void;
-}) {
+  onSelectMarker?: (marker: MapMarker | null) => void;
+  onRouteToMarker?: (marker: MapMarker) => void;
+  centerOn?: LatLng | null;
+  actions?: ReactNode;
+}
+
+export function OperationsMap(props: OperationsMapProps) {
+  return (
+    <MapErrorBoundary>
+      <OperationsMapContent {...props} />
+    </MapErrorBoundary>
+  );
+}
+
+function OperationsMapContent({
+  markers = [],
+  className,
+  title = "Andhra Pradesh operations map",
+  route,
+  calculatedRoute,
+  routeLabel,
+  pin,
+  userLocation,
+  userAccuracyM,
+  onMapClick,
+  onSelectMarker,
+  onRouteToMarker,
+  centerOn,
+  actions,
+}: OperationsMapProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapInstanceRef = useRef<google.maps.Map | null>(null);
+  const markersRef = useRef<google.maps.Marker[]>([]);
+  const clustererRef = useRef<MarkerClusterer | null>(null);
+  const userMarkerRef = useRef<google.maps.Marker | null>(null);
+  const accuracyCircleRef = useRef<google.maps.Circle | null>(null);
+  const pinMarkerRef = useRef<google.maps.Marker | null>(null);
+  const polylineRef = useRef<google.maps.Polyline | null>(null);
+
+  const [mapLoaded, setMapLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [selected, setSelected] = useState<MapMarker | null>(null);
-  const [showLegend, setShowLegend] = useState(true);
-  const [view, setView] = useState<View>(DEFAULT_VIEW);
-  const [hidden, setHidden] = useState<Record<string, boolean>>({});
-  const [mapAssetError, setMapAssetError] = useState(false);
-  const surface = useRef<HTMLDivElement | null>(null);
-  const drag = useRef<{ x: number; y: number; view: View } | null>(null);
-  const pinch = useRef<{ distance: number; zoom: number } | null>(null);
+  const [showLayers, setShowLayers] = useState(false);
+  const [hiddenKinds, setHiddenKinds] = useState<Record<string, boolean>>({});
+  const [followUser, setFollowUser] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
 
-  const vp = useMemo(() => viewportOf(view), [view]);
+  // Initialize Google Map
+  useEffect(() => {
+    let active = true;
+    if (!containerRef.current) return;
 
-  const visible = useMemo(
-    () =>
-      markers.filter(
-        (marker) =>
-          !hidden[marker.kind] &&
-          isInsideAndhraPradesh(marker.lat, marker.lng) &&
-          // viewport culling — only render what the user can actually see
-          marker.lat >= vp.minLat - vp.latSpan * 0.1 &&
-          marker.lat <= vp.maxLat + vp.latSpan * 0.1 &&
-          marker.lng >= vp.minLng - vp.lngSpan * 0.1 &&
-          marker.lng <= vp.maxLng + vp.lngSpan * 0.1,
-      ),
-    [markers, hidden, vp],
-  );
+    loadGoogleMaps()
+      .then((google) => {
+        if (!active || !containerRef.current) return;
 
-  const rejectedCount = useMemo(
-    () => markers.filter((marker) => !isInsideAndhraPradesh(marker.lat, marker.lng)).length,
-    [markers],
-  );
+        const apBounds = new google.maps.LatLngBounds(
+          new google.maps.LatLng(AP_BOUNDS.minLat, AP_BOUNDS.minLng),
+          new google.maps.LatLng(AP_BOUNDS.maxLat, AP_BOUNDS.maxLng),
+        );
 
-  const groups = useMemo(
-    () => clusterPoints(visible, Math.max(0.0015, vp.latSpan / 14)),
-    [visible, vp.latSpan],
-  );
+        const map = new google.maps.Map(containerRef.current, {
+          center: { lat: AP_CENTER.lat, lng: AP_CENTER.lng },
+          zoom: 7.5,
+          minZoom: 6,
+          maxZoom: 19,
+          restriction: {
+            latLngBounds: apBounds,
+            strictBounds: false,
+          },
+          styles: MAP_STYLES,
+          disableDefaultUI: true,
+          zoomControl: false,
+          mapTypeControl: false,
+          streetViewControl: false,
+          fullscreenControl: false,
+          gestureHandling: "greedy",
+        });
 
-  const toPercent = useCallback(
-    (point: LatLng) => ({
-      x: ((point.lng - vp.minLng) / vp.lngSpan) * 100,
-      y: (1 - (point.lat - vp.minLat) / vp.latSpan) * 100,
-    }),
-    [vp],
-  );
-  const toPosition = useCallback(
-    (point: LatLng) => {
-      const position = toPercent(point);
-      return { left: `${position.x}%`, top: `${position.y}%` };
-    },
-    [toPercent],
-  );
-  const mapAssetPosition = useMemo(() => {
-    const topLeft = toPercent({ lat: AP_BOUNDS.maxLat, lng: AP_BOUNDS.minLng });
-    const bottomRight = toPercent({ lat: AP_BOUNDS.minLat, lng: AP_BOUNDS.maxLng });
-    const stateWidth = bottomRight.x - topLeft.x;
-    const stateHeight = bottomRight.y - topLeft.y;
+        map.addListener("click", (e: google.maps.MapMouseEvent) => {
+          if (e.latLng && onMapClick) {
+            const lat = e.latLng.lat();
+            const lng = e.latLng.lng();
+            if (isInsideAndhraPradesh(lat, lng)) {
+              onMapClick({ lat, lng });
+            }
+          }
+        });
 
-    return {
-      x: topLeft.x - stateWidth * (AP_MAP_ASSET.alphaBounds.minX / AP_MAP_ALPHA_WIDTH),
-      y: topLeft.y - stateHeight * (AP_MAP_ASSET.alphaBounds.minY / AP_MAP_ALPHA_HEIGHT),
-      width: stateWidth * (AP_MAP_ASSET.width / AP_MAP_ALPHA_WIDTH),
-      height: stateHeight * (AP_MAP_ASSET.height / AP_MAP_ALPHA_HEIGHT),
+        // Suspend follow-me if user manually drags the map
+        map.addListener("dragstart", () => {
+          setFollowUser(false);
+        });
+
+        mapInstanceRef.current = map;
+        setMapLoaded(true);
+      })
+      .catch((err) => {
+        if (active) {
+          console.warn("Failed to load Google Maps JS API:", err);
+          setLoadError(
+            err instanceof Error ? err.message : "Google Maps Platform script could not be loaded.",
+          );
+        }
+      });
+
+    return () => {
+      active = false;
+      if (clustererRef.current) {
+        clustererRef.current.clearMarkers();
+      }
+      markersRef.current.forEach((m) => m.setMap(null));
+      markersRef.current = [];
+      userMarkerRef.current?.setMap(null);
+      polylineRef.current?.setMap(null);
     };
-  }, [toPercent]);
-  const routeIsValid =
-    !!route &&
-    route.length >= 2 &&
-    route.every((point) => isInsideAndhraPradesh(point.lat, point.lng));
-  const routePoints = routeIsValid
-    ? route!
-        .map((point) => {
-          const position = toPercent(point);
-          return `${position.x},${position.y}`;
-        })
-        .join(" ")
-    : "";
+  }, [onMapClick]);
 
-  const zoomBy = useCallback((factor: number) => {
-    setView((current) =>
-      clampView({
-        ...current,
-        zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, current.zoom * factor)),
-      }),
+  // Center on explicit coordinate request
+  useEffect(() => {
+    if (!mapInstanceRef.current || !centerOn) return;
+    mapInstanceRef.current.panTo({ lat: centerOn.lat, lng: centerOn.lng });
+    if (mapInstanceRef.current.getZoom()! < 12) {
+      mapInstanceRef.current.setZoom(13);
+    }
+  }, [centerOn]);
+
+  // Handle User Location Marker & Accuracy Circle
+  useEffect(() => {
+    if (!mapInstanceRef.current || typeof window === "undefined" || !window.google?.maps) return;
+    const google = window.google;
+    const map = mapInstanceRef.current;
+
+    if (!userLocation) {
+      userMarkerRef.current?.setMap(null);
+      accuracyCircleRef.current?.setMap(null);
+      return;
+    }
+
+    const pos = { lat: userLocation.lat, lng: userLocation.lng };
+
+    // Accuracy circle
+    if (!accuracyCircleRef.current) {
+      accuracyCircleRef.current = new google.maps.Circle({
+        strokeColor: "#38bdf8",
+        strokeOpacity: 0.6,
+        strokeWeight: 1.5,
+        fillColor: "#0284c7",
+        fillOpacity: 0.15,
+        map,
+        center: pos,
+        radius: userAccuracyM || 30,
+        clickable: false,
+      });
+    } else {
+      accuracyCircleRef.current.setCenter(pos);
+      accuracyCircleRef.current.setRadius(userAccuracyM || 30);
+      accuracyCircleRef.current.setMap(map);
+    }
+
+    // User marker
+    const svgIcon = {
+      path: google.maps.SymbolPath.CIRCLE,
+      scale: 8,
+      fillColor: "#38bdf8",
+      fillOpacity: 1,
+      strokeColor: "#ffffff",
+      strokeWeight: 3,
+    };
+
+    if (!userMarkerRef.current) {
+      userMarkerRef.current = new google.maps.Marker({
+        position: pos,
+        map,
+        title: "Your location",
+        icon: svgIcon,
+        zIndex: 999,
+      });
+      userMarkerRef.current.addListener("click", () => {
+        setSelected({
+          id: "user-loc",
+          label: "Your Current Location",
+          kind: "team",
+          lat: userLocation.lat,
+          lng: userLocation.lng,
+          detail: `Accuracy: ±${Math.round(userAccuracyM || 0)} meters · Device GPS`,
+          quality: "LIVE",
+        });
+      });
+    } else {
+      userMarkerRef.current.setPosition(pos);
+      userMarkerRef.current.setMap(map);
+    }
+
+    if (followUser) {
+      map.panTo(pos);
+    }
+  }, [userLocation, userAccuracyM, followUser]);
+
+  // Handle Manual Pin (e.g. for /sos pin drop)
+  useEffect(() => {
+    if (!mapInstanceRef.current || typeof window === "undefined" || !window.google?.maps) return;
+    const google = window.google;
+    const map = mapInstanceRef.current;
+
+    if (!pin) {
+      pinMarkerRef.current?.setMap(null);
+      return;
+    }
+
+    const pos = { lat: pin.lat, lng: pin.lng };
+    if (!pinMarkerRef.current) {
+      pinMarkerRef.current = new google.maps.Marker({
+        position: pos,
+        map,
+        draggable: true,
+        title: "Selected Emergency Pin",
+        icon: {
+          path: "M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z",
+          fillColor: "#ef4444",
+          fillOpacity: 1,
+          strokeColor: "#ffffff",
+          strokeWeight: 1.5,
+          scale: 1.6,
+          anchor: new google.maps.Point(12, 22),
+        },
+        zIndex: 998,
+      });
+
+      pinMarkerRef.current.addListener("dragend", (e: google.maps.MapMouseEvent) => {
+        if (e.latLng && onMapClick) {
+          const lat = e.latLng.lat();
+          const lng = e.latLng.lng();
+          if (isInsideAndhraPradesh(lat, lng)) {
+            onMapClick({ lat, lng });
+          }
+        }
+      });
+    } else {
+      pinMarkerRef.current.setPosition(pos);
+      pinMarkerRef.current.setMap(map);
+    }
+  }, [pin, onMapClick]);
+
+  // Render Clustered Facility / Alert / Incident Markers
+  useEffect(() => {
+    if (
+      !mapLoaded ||
+      !mapInstanceRef.current ||
+      typeof window === "undefined" ||
+      !window.google?.maps
+    )
+      return;
+    const google = window.google;
+    const map = mapInstanceRef.current;
+
+    // Clear old markers
+    if (clustererRef.current) {
+      clustererRef.current.clearMarkers();
+    }
+    markersRef.current.forEach((m) => m.setMap(null));
+    markersRef.current = [];
+
+    const visibleMarkers = markers.filter(
+      (m) => !hiddenKinds[m.kind] && isInsideAndhraPradesh(m.lat, m.lng),
     );
+
+    const gMarkers: google.maps.Marker[] = visibleMarkers.map((marker) => {
+      const style = KIND_STYLE[marker.kind] || KIND_STYLE.resource;
+      const gMarker = new google.maps.Marker({
+        position: { lat: marker.lat, lng: marker.lng },
+        title: marker.label,
+        icon: {
+          path: google.maps.SymbolPath.CIRCLE,
+          scale: 10,
+          fillColor: style.bg,
+          fillOpacity: 1,
+          strokeColor: "#ffffff",
+          strokeWeight: 2,
+        },
+        zIndex: marker.kind === "sos" ? 100 : marker.kind === "risk" ? 90 : 50,
+      });
+
+      gMarker.addListener("click", () => {
+        setSelected(marker);
+        onSelectMarker?.(marker);
+      });
+
+      return gMarker;
+    });
+
+    markersRef.current = gMarkers;
+    clustererRef.current = new MarkerClusterer({ map, markers: gMarkers });
+  }, [markers, hiddenKinds, mapLoaded, onSelectMarker]);
+
+  // Render Real Road Network Polyline
+  useEffect(() => {
+    if (
+      !mapLoaded ||
+      !mapInstanceRef.current ||
+      typeof window === "undefined" ||
+      !window.google?.maps
+    )
+      return;
+    const google = window.google;
+    const map = mapInstanceRef.current;
+
+    polylineRef.current?.setMap(null);
+    polylineRef.current = null;
+
+    const pathPoints = calculatedRoute?.path || route;
+    if (!pathPoints || pathPoints.length < 2) return;
+
+    const path = pathPoints.map((p) => new google.maps.LatLng(p.lat, p.lng));
+    const isHazardous =
+      calculatedRoute?.hazardRisk === "CRITICAL" || calculatedRoute?.hazardRisk === "HIGH";
+
+    polylineRef.current = new google.maps.Polyline({
+      path,
+      strokeColor: isHazardous ? "#f97316" : "#0284c7",
+      strokeOpacity: 0.9,
+      strokeWeight: 5,
+      map,
+      zIndex: 200,
+    });
+
+    // Auto fit bounds to route
+    const bounds = new google.maps.LatLngBounds();
+    pathPoints.forEach((p) => bounds.extend(new google.maps.LatLng(p.lat, p.lng)));
+    map.fitBounds(bounds, { top: 40, right: 40, bottom: 40, left: 40 });
+  }, [route, calculatedRoute, mapLoaded]);
+
+  const resetApView = useCallback(() => {
+    if (!mapInstanceRef.current || typeof window === "undefined" || !window.google?.maps) return;
+    const google = window.google;
+    const apBounds = new google.maps.LatLngBounds(
+      new google.maps.LatLng(AP_BOUNDS.minLat, AP_BOUNDS.minLng),
+      new google.maps.LatLng(AP_BOUNDS.maxLat, AP_BOUNDS.maxLng),
+    );
+    mapInstanceRef.current.fitBounds(apBounds);
+    setFollowUser(false);
   }, []);
 
-  const panByPixels = useCallback((dx: number, dy: number, from: View) => {
-    const rect = surface.current?.getBoundingClientRect();
-    if (!rect) return;
-    const active = viewportOf(from);
-    setView(
-      clampView({
-        ...from,
-        centerLng: from.centerLng - (dx / rect.width) * active.lngSpan,
-        centerLat: from.centerLat + (dy / rect.height) * active.latSpan,
-      }),
-    );
+  const centerOnUser = useCallback(() => {
+    if (!mapInstanceRef.current || !userLocation) return;
+    mapInstanceRef.current.panTo({ lat: userLocation.lat, lng: userLocation.lng });
+    mapInstanceRef.current.setZoom(14);
+    setFollowUser(true);
+  }, [userLocation]);
+
+  const toggleFullscreen = useCallback(() => {
+    if (!containerRef.current) return;
+    if (!document.fullscreenElement) {
+      containerRef.current.requestFullscreen?.().catch(() => {});
+      setIsFullscreen(true);
+    } else {
+      document.exitFullscreen?.().catch(() => {});
+      setIsFullscreen(false);
+    }
   }, []);
 
   return (
@@ -220,313 +488,295 @@ export function OperationsMap({
       title={title}
       className={cn("overflow-hidden", className)}
       action={
-        <button
-          aria-label="Toggle map layers"
-          onClick={() => setShowLegend((value) => !value)}
-          className="rounded-md p-2 text-muted-foreground hover:bg-surface-2 hover:text-foreground"
-        >
-          <Layers className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-1.5">
+          {actions}
+          <button
+            type="button"
+            aria-label="Toggle map layers"
+            onClick={() => setShowLayers((prev) => !prev)}
+            className={cn(
+              "rounded-md p-2 text-muted-foreground hover:bg-surface-2 hover:text-foreground",
+              showLayers && "bg-primary/15 text-primary",
+            )}
+          >
+            <Layers className="h-4 w-4" />
+          </button>
+        </div>
       }
     >
       <div
-        ref={surface}
+        ref={containerRef}
         role="application"
-        aria-label="Interactive map of the Andhra Pradesh response area. Drag to pan, use the zoom buttons or arrow keys."
-        tabIndex={0}
-        className="relative min-h-[360px] touch-none overflow-hidden rounded-xl border border-border bg-[#12232a] select-none focus-visible:ring-2 focus-visible:ring-primary sm:min-h-[420px]"
-        onWheel={(event) => {
-          event.preventDefault();
-          zoomBy(event.deltaY < 0 ? 1.15 : 1 / 1.15);
-        }}
-        onPointerDown={(event) => {
-          (event.target as HTMLElement).setPointerCapture?.(event.pointerId);
-          drag.current = { x: event.clientX, y: event.clientY, view };
-        }}
-        onPointerMove={(event) => {
-          const start = drag.current;
-          if (!start || event.buttons === 0) return;
-          panByPixels(event.clientX - start.x, event.clientY - start.y, start.view);
-        }}
-        onPointerUp={(event) => {
-          const start = drag.current;
-          if (start && onMapClick && surface.current) {
-            const rect = surface.current.getBoundingClientRect();
-            const moved = Math.hypot(start.x - event.clientX, start.y - event.clientY) > 6;
-            const target = event.target as Node;
-            if (!moved && target === surface.current && rect.width > 0 && rect.height > 0) {
-              const x = (event.clientX - rect.left) / rect.width;
-              const y = (event.clientY - rect.top) / rect.height;
-              const point = {
-                lng: vp.minLng + x * vp.lngSpan,
-                lat: vp.minLat + (1 - y) * vp.latSpan,
-              };
-              if (isInsideAndhraPradesh(point.lat, point.lng)) onMapClick(point);
-            }
-          }
-          drag.current = null;
-        }}
-        onPointerCancel={() => {
-          drag.current = null;
-        }}
-        onTouchStart={(event) => {
-          if (event.touches.length === 2) {
-            const [a, b] = [event.touches[0]!, event.touches[1]!];
-            pinch.current = {
-              distance: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
-              zoom: view.zoom,
-            };
-          }
-        }}
-        onTouchMove={(event) => {
-          if (event.touches.length === 2 && pinch.current) {
-            const [a, b] = [event.touches[0]!, event.touches[1]!];
-            const distance = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
-            const next = pinch.current.zoom * (distance / pinch.current.distance);
-            setView((current) =>
-              clampView({
-                ...current,
-                zoom: Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next)),
-              }),
-            );
-          }
-        }}
-        onTouchEnd={() => {
-          pinch.current = null;
-        }}
-        onKeyDown={(event) => {
-          const step = 40;
-          if (event.key === "ArrowLeft") panByPixels(step, 0, view);
-          else if (event.key === "ArrowRight") panByPixels(-step, 0, view);
-          else if (event.key === "ArrowUp") panByPixels(0, step, view);
-          else if (event.key === "ArrowDown") panByPixels(0, -step, view);
-          else if (event.key === "+" || event.key === "=") zoomBy(1.2);
-          else if (event.key === "-") zoomBy(1 / 1.2);
-          else return;
-          event.preventDefault();
-        }}
+        aria-label="Google Maps Andhra Pradesh response area"
+        className="relative min-h-[380px] w-full overflow-hidden rounded-xl border border-border bg-[#0f172a] sm:min-h-[460px] lg:min-h-[520px]"
       >
-        <svg
-          viewBox="0 0 100 100"
-          preserveAspectRatio="none"
-          className="pointer-events-none absolute inset-0 h-full w-full"
-          role="img"
-          aria-label="Andhra Pradesh assembly constituency map"
-        >
-          {!mapAssetError && (
-            <image
-              href={AP_MAP_ASSET.src}
-              x={mapAssetPosition.x}
-              y={mapAssetPosition.y}
-              width={mapAssetPosition.width}
-              height={mapAssetPosition.height}
-              opacity="0.86"
-              preserveAspectRatio="none"
-              onError={() => setMapAssetError(true)}
-            />
-          )}
-        </svg>
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-[#071317]/10 via-transparent to-[#071317]/30" />
-        <div className="pointer-events-none absolute bottom-[10%] right-[8%] rounded bg-[#071317]/70 px-2 py-1 font-mono text-[10px] tracking-widest text-cyan-50/80 uppercase backdrop-blur-sm">
-          Andhra Pradesh · supplied open-data map
-        </div>
-        {mapAssetError && (
-          <div className="absolute inset-x-3 bottom-3 rounded-lg border border-destructive/60 bg-destructive/20 px-3 py-2 text-xs text-destructive-foreground shadow-lg backdrop-blur sm:inset-x-auto sm:right-3 sm:max-w-sm">
-            The supplied Andhra Pradesh map asset could not be loaded. Map coordinates and response
-            records remain available, but the geographic boundary is unavailable.
-          </div>
-        )}
+        {/* Map Canvas */}
+        <div className="h-full w-full min-h-[380px] sm:min-h-[460px] lg:min-h-[520px]" />
 
-        {routeIsValid && (
-          <>
-            <svg
-              viewBox="0 0 100 100"
-              preserveAspectRatio="none"
-              className="pointer-events-none absolute inset-0 h-full w-full"
-              aria-label={routeLabel}
-            >
-              <polyline
-                points={routePoints}
-                fill="none"
-                stroke="var(--primary)"
-                strokeWidth="0.8"
-                strokeDasharray="2 1"
-                vectorEffect="non-scaling-stroke"
-              />
-            </svg>
-            <span className="pointer-events-none absolute left-1/2 top-14 -translate-x-1/2 rounded-full border border-primary/40 bg-background/90 px-2 py-1 font-mono text-[10px] font-bold text-primary">
-              {routeLabel}
-            </span>
-          </>
-        )}
-
-        {pin && isInsideAndhraPradesh(pin.lat, pin.lng) && (
-          <span
-            className="pointer-events-none absolute -translate-x-1/2 -translate-y-full text-destructive drop-shadow-lg"
-            style={toPosition(pin)}
-            aria-label="Selected manual emergency pin"
-          >
-            <MapPin className="h-8 w-8 fill-destructive/30" />
-          </span>
-        )}
-
-        {groups.map((group) => {
-          const position = toPosition(group);
-          const first = group.items[0]!;
-          const marker =
-            group.items.length === 1
-              ? first
-              : {
-                  ...first,
-                  label: `${group.items.length} clustered incidents`,
-                  detail: group.items.map((item) => item.label).join(", "),
-                };
-          return (
-            <button
-              key={`${group.lat}-${group.lng}-${first.id}`}
-              type="button"
-              title={marker.label}
-              onClick={() => {
-                setSelected(marker);
-                if (group.items.length > 1) {
-                  setView((current) =>
-                    clampView({
-                      ...current,
-                      centerLat: group.lat,
-                      centerLng: group.lng,
-                      zoom: Math.min(MAX_ZOOM, current.zoom * 2),
-                    }),
-                  );
-                }
-              }}
-              className={cn(
-                "absolute flex h-9 w-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full text-xs font-black shadow-lg ring-8 transition-transform hover:scale-110",
-                KIND_STYLE[marker.kind],
-              )}
-              style={position}
-            >
-              {group.items.length > 1
-                ? group.items.length
-                : marker.kind === "resource"
-                  ? "＋"
-                  : marker.kind === "team"
-                    ? "◆"
-                    : marker.kind === "risk"
-                      ? "△"
-                      : "!"}
-            </button>
-          );
-        })}
-
-        <div className="absolute left-3 top-3 flex items-center gap-2 rounded-lg border border-cyan-100/20 bg-[#12232a]/85 px-3 py-2 font-mono text-[10px] text-cyan-50 backdrop-blur">
-          <Crosshair className="h-3.5 w-3.5 text-primary" aria-hidden />
-          <span>
-            {vp.minLat.toFixed(2)}–{vp.maxLat.toFixed(2)} N · {vp.minLng.toFixed(2)}–
-            {vp.maxLng.toFixed(2)} E
-          </span>
-        </div>
-
-        {rejectedCount > 0 && (
-          <div className="absolute inset-x-3 bottom-3 rounded-lg border border-destructive/50 bg-destructive/15 px-3 py-2 text-xs text-destructive-foreground shadow-lg backdrop-blur sm:inset-x-auto sm:right-3 sm:max-w-sm">
-            {rejectedCount} location record{rejectedCount === 1 ? "" : "s"} hidden: outside the
-            Andhra Pradesh operating bounds.
-          </div>
-        )}
-
-        <div className="absolute right-3 top-3 flex flex-col gap-1.5">
-          <button
-            type="button"
-            aria-label="Zoom in"
-            onClick={() => zoomBy(1.4)}
-            className="flex h-10 w-10 items-center justify-center rounded-lg border border-cyan-100/20 bg-[#12232a]/90 text-cyan-50 backdrop-blur hover:bg-[#1b333c]"
-          >
-            <Plus className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            aria-label="Zoom out"
-            onClick={() => zoomBy(1 / 1.4)}
-            className="flex h-10 w-10 items-center justify-center rounded-lg border border-cyan-100/20 bg-[#12232a]/90 text-cyan-50 backdrop-blur hover:bg-[#1b333c]"
-          >
-            <Minus className="h-4 w-4" />
-          </button>
-          <button
-            type="button"
-            aria-label="Reset map view"
-            onClick={() => setView(DEFAULT_VIEW)}
-            className="flex h-10 w-10 items-center justify-center rounded-lg border border-cyan-100/20 bg-[#12232a]/90 text-cyan-50 backdrop-blur hover:bg-[#1b333c]"
-          >
-            <RotateCcw className="h-4 w-4" />
-          </button>
-        </div>
-
-        {showLegend && (
-          <div className="absolute bottom-3 left-3 rounded-lg border border-cyan-100/20 bg-[#12232a]/90 p-3 text-xs text-cyan-50 backdrop-blur">
-            <p className="mb-2 font-semibold">Layers</p>
-            <div className="grid gap-1.5">
-              {(Object.keys(KIND_STYLE) as MapMarker["kind"][]).map((kind) => (
-                <label key={kind} className="flex items-center gap-2">
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 accent-primary"
-                    checked={!hidden[kind]}
-                    onChange={() => setHidden((prev) => ({ ...prev, [kind]: !prev[kind] }))}
-                  />
-                  <i className={cn("h-2.5 w-2.5 rounded-full", KIND_STYLE[kind].split(" ")[0])} />
-                  {KIND_LABEL[kind]}
-                </label>
-              ))}
-            </div>
-            <div className="mt-3 border-t border-cyan-100/15 pt-2">
-              <p className="mb-1 text-[10px] text-cyan-100/60 uppercase">No connected source</p>
-              {UNAVAILABLE_LAYER_LABELS.map((label) => (
-                <div
-                  key={label}
-                  className="flex items-center justify-between gap-2 py-0.5 text-cyan-100/60"
-                >
-                  <span>{label}</span>
-                  <DataTag quality="UNAVAILABLE" />
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {selected && (
-          <div className="absolute right-3 bottom-3 max-w-[min(280px,calc(100%-1.5rem))] rounded-lg border border-border bg-surface/95 p-3 shadow-xl backdrop-blur">
-            <button
-              className="float-right text-muted-foreground"
-              onClick={() => setSelected(null)}
-              aria-label="Close marker details"
-            >
-              ×
-            </button>
-            <p className="pr-5 text-sm font-semibold">{selected.label}</p>
-            {selected.detail && (
-              <p className="mt-1 text-xs text-muted-foreground">{selected.detail}</p>
-            )}
-            {selected.score !== undefined && (
-              <p className="mt-2 font-mono text-xs text-high">Risk score {selected.score}/100</p>
-            )}
-            {selected.quality && (
-              <div className="mt-2">
-                <DataTag quality={selected.quality} />
-              </div>
-            )}
-            <p className="mt-2 font-mono text-[10px] text-muted-foreground">
-              <MapPin className="mr-1 inline h-3 w-3" />
-              {selected.lat.toFixed(4)}, {selected.lng.toFixed(4)}
+        {/* Loading Overlay */}
+        {!mapLoaded && !loadError && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0f172a]/90 text-cyan-50 backdrop-blur-sm">
+            <Compass className="h-8 w-8 animate-spin text-primary" />
+            <p className="mt-3 text-sm font-semibold">Connecting to Google Maps Platform…</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Focusing on Andhra Pradesh response area
             </p>
           </div>
         )}
+
+        {/* Fallback / Error Banner */}
+        {loadError && (
+          <div className="absolute inset-x-3 top-3 rounded-lg border border-accent/50 bg-accent/20 p-4 text-xs text-accent-foreground backdrop-blur-md">
+            <p className="font-semibold flex items-center gap-2">
+              <ShieldAlert className="h-4 w-4 text-accent" />
+              Google Maps Platform Configuration Required
+            </p>
+            <p className="mt-1">
+              {!isGoogleMapsConfigured()
+                ? "Add VITE_GOOGLE_MAPS_API_KEY to your environment variables to enable live Google road routing and Places discovery."
+                : loadError}
+            </p>
+          </div>
+        )}
+
+        {/* Floating Top Left Badge: Scope */}
+        <div className="absolute left-3 top-3 flex items-center gap-2 rounded-lg border border-cyan-100/20 bg-[#0f172a]/85 px-3 py-1.5 font-mono text-[10px] text-cyan-50 backdrop-blur-md shadow-lg">
+          <span className="h-2 w-2 rounded-full bg-safe animate-pulse" />
+          <span>Andhra Pradesh · Canonical Ops Map</span>
+        </div>
+
+        {/* Floating Top Right Controls */}
+        <div className="absolute right-3 top-3 flex flex-col gap-1.5 z-10">
+          <button
+            type="button"
+            title="Locate me & follow"
+            aria-label="Locate me & follow"
+            onClick={centerOnUser}
+            disabled={!userLocation}
+            className={cn(
+              "flex h-10 w-10 items-center justify-center rounded-lg border border-cyan-100/20 bg-[#0f172a]/90 text-cyan-50 backdrop-blur-md shadow-lg hover:bg-[#1b333c] disabled:opacity-50",
+              followUser && "border-primary bg-primary/25 text-primary",
+            )}
+          >
+            <Crosshair className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            title="Reset Andhra Pradesh view"
+            aria-label="Reset Andhra Pradesh view"
+            onClick={resetApView}
+            className="flex h-10 w-10 items-center justify-center rounded-lg border border-cyan-100/20 bg-[#0f172a]/90 text-cyan-50 backdrop-blur-md shadow-lg hover:bg-[#1b333c]"
+          >
+            <RotateCcw className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            title="Toggle fullscreen"
+            aria-label="Toggle fullscreen"
+            onClick={toggleFullscreen}
+            className="flex h-10 w-10 items-center justify-center rounded-lg border border-cyan-100/20 bg-[#0f172a]/90 text-cyan-50 backdrop-blur-md shadow-lg hover:bg-[#1b333c]"
+          >
+            {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+          </button>
+        </div>
+
+        {/* Route Info Badge */}
+        {(calculatedRoute || route) && (
+          <div className="absolute top-12 left-3 max-w-[min(360px,calc(100%-6rem))] rounded-lg border border-primary/40 bg-[#0f172a]/90 p-2.5 text-xs text-cyan-50 shadow-xl backdrop-blur-md z-10">
+            <p className="font-semibold text-primary flex items-center gap-1.5">
+              <Navigation className="h-3.5 w-3.5" />
+              {calculatedRoute?.summary || routeLabel || "Real Road Route"}
+            </p>
+            {calculatedRoute && (
+              <div className="mt-1 text-[11px] text-muted-foreground">
+                <span>{calculatedRoute.distanceText}</span> ·{" "}
+                <span>{calculatedRoute.durationText}</span>
+              </div>
+            )}
+            {calculatedRoute?.hazardReason && (
+              <p
+                className={cn(
+                  "mt-1.5 rounded px-2 py-1 font-mono text-[10px]",
+                  calculatedRoute.hazardRisk === "CRITICAL" || calculatedRoute.hazardRisk === "HIGH"
+                    ? "border border-destructive/40 bg-destructive/20 text-destructive-foreground font-semibold"
+                    : "border border-safe/30 bg-safe/10 text-safe",
+                )}
+              >
+                {calculatedRoute.hazardReason}
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Layers Drawer / Popover */}
+        {showLayers && (
+          <div className="absolute bottom-3 left-3 max-w-[280px] rounded-lg border border-cyan-100/20 bg-[#0f172a]/95 p-3.5 text-xs text-cyan-50 shadow-2xl backdrop-blur-md z-20">
+            <div className="flex items-center justify-between border-b border-border/60 pb-2">
+              <p className="font-semibold">Map Layers</p>
+              <button
+                type="button"
+                onClick={() => setShowLayers(false)}
+                className="text-muted-foreground hover:text-foreground"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="mt-2.5 grid gap-2">
+              {(Object.keys(KIND_STYLE) as MapMarker["kind"][]).map((kind) => {
+                const conf = KIND_STYLE[kind];
+                return (
+                  <label key={kind} className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded accent-primary"
+                      checked={!hiddenKinds[kind]}
+                      onChange={() => setHiddenKinds((prev) => ({ ...prev, [kind]: !prev[kind] }))}
+                    />
+                    <span
+                      className="flex h-4 w-4 items-center justify-center rounded-full text-[9px] font-bold"
+                      style={{ backgroundColor: conf.bg, color: conf.text }}
+                    >
+                      {conf.icon}
+                    </span>
+                    <span className="text-xs">{conf.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="mt-3 border-t border-cyan-100/15 pt-2 text-[10px] text-muted-foreground">
+              Google Maps Platform · IMD Amaravati warnings
+            </div>
+          </div>
+        )}
+
+        {/* Selected Facility / Marker Details Card (Mobile Slide-up / Desktop Card) */}
+        {selected && (
+          <div className="absolute inset-x-3 bottom-3 sm:inset-x-auto sm:right-3 sm:max-w-sm rounded-xl border border-border bg-surface/95 p-4 shadow-2xl backdrop-blur-md z-30 animate-in fade-in slide-in-from-bottom-3 duration-200">
+            <button
+              type="button"
+              className="float-right text-muted-foreground hover:text-foreground text-sm font-bold"
+              onClick={() => {
+                setSelected(null);
+                onSelectMarker?.(null);
+              }}
+              aria-label="Close details"
+            >
+              ✕
+            </button>
+            <div className="pr-6">
+              <span
+                className="inline-block rounded px-2 py-0.5 font-mono text-[9px] font-bold uppercase"
+                style={{
+                  backgroundColor: KIND_STYLE[selected.kind]?.bg || "#0284c7",
+                  color: KIND_STYLE[selected.kind]?.text || "#fff",
+                }}
+              >
+                {KIND_STYLE[selected.kind]?.label || selected.kind}
+              </span>
+              <h3 className="mt-1.5 text-base font-bold text-foreground">{selected.label}</h3>
+              {selected.detail && (
+                <p className="mt-1 text-xs text-muted-foreground">{selected.detail}</p>
+              )}
+              {selected.address && (
+                <p className="mt-1 text-xs text-muted-foreground flex items-center gap-1">
+                  <MapPin className="h-3.5 w-3.5 shrink-0 text-primary" />
+                  {selected.address}
+                </p>
+              )}
+              {selected.score !== undefined && (
+                <p className="mt-1.5 font-mono text-xs font-bold text-high">
+                  Risk score: {selected.score}/100
+                </p>
+              )}
+              {selected.quality && (
+                <div className="mt-2">
+                  <DataTag quality={selected.quality} />
+                </div>
+              )}
+              <div className="mt-3 flex flex-wrap gap-2 border-t border-border/60 pt-3">
+                {onRouteToMarker && (
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => {
+                      onRouteToMarker(selected);
+                      setSelected(null);
+                    }}
+                  >
+                    <Navigation className="h-3.5 w-3.5" />
+                    Route here
+                  </Button>
+                )}
+                {selected.phone && (
+                  <a
+                    href={`tel:${selected.phone}`}
+                    className="inline-flex min-h-9 items-center gap-1.5 rounded-md border border-border px-3 text-xs font-semibold hover:bg-surface-2"
+                  >
+                    <Phone className="h-3.5 w-3.5" />
+                    Call
+                  </a>
+                )}
+                <a
+                  href={`https://www.google.com/maps/dir/?api=1&destination=${selected.lat},${selected.lng}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex min-h-9 items-center gap-1.5 rounded-md border border-border bg-surface px-3 text-xs font-semibold text-foreground hover:bg-surface-2"
+                >
+                  External maps ↗
+                </a>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
+
       <p className="mt-3 text-[11px] text-muted-foreground">
-        Drag to pan, scroll or pinch to zoom. Markers are clustered and loaded for the visible area
-        only. Route safety is not verified by this view; follow current official guidance.
-        {route &&
-          !routeIsValid &&
-          " The requested route is unavailable inside the AP operating bounds."}
+        Powered by Google Maps Platform & authoritative IMD Amaravati hazard layers. Drag to pan,
+        scroll/pinch to zoom.
+        {userLocation && ` Your position is accurate to ±${Math.round(userAccuracyM || 0)} m.`}
       </p>
     </Panel>
   );
+}
+
+class MapErrorBoundary extends Component<
+  { children: ReactNode },
+  { hasError: boolean; error: Error | null }
+> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  override componentDidCatch(error: Error, errorInfo: ErrorInfo) {
+    console.error("OperationsMap error boundary caught an error:", error, errorInfo);
+  }
+
+  override render() {
+    if (this.state.hasError) {
+      return (
+        <Panel title="Operations map unavailable">
+          <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive-foreground">
+            <p className="font-semibold">An unexpected map rendering error occurred.</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {this.state.error?.message || "Please refresh the page to reload the map component."}
+            </p>
+            <Button
+              size="sm"
+              variant="outline"
+              className="mt-3"
+              onClick={() => this.setState({ hasError: false, error: null })}
+            >
+              Retry map
+            </Button>
+          </div>
+        </Panel>
+      );
+    }
+    return this.props.children;
+  }
 }

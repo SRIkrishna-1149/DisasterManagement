@@ -67,7 +67,9 @@ export function Panel({
       {(title || action) && (
         <header className="mb-4 flex flex-wrap items-center justify-between gap-2">
           {typeof title === "string" ? (
-            <h2 className="text-sm font-semibold tracking-[0.14em] text-muted-foreground uppercase">{title}</h2>
+            <h2 className="text-sm font-semibold tracking-[0.14em] text-muted-foreground uppercase">
+              {title}
+            </h2>
           ) : (
             title
           )}
@@ -82,7 +84,9 @@ export function Panel({
 export function Stat({ label, value, hint }: { label: string; value: ReactNode; hint?: string }) {
   return (
     <div className="rounded-lg border border-border bg-surface/60 p-3">
-      <p className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase">{label}</p>
+      <p className="text-[11px] font-medium tracking-wider text-muted-foreground uppercase">
+        {label}
+      </p>
       <p className="font-display mt-1 text-2xl leading-none font-bold">{value}</p>
       {hint && <p className="mt-1 text-xs text-muted-foreground">{hint}</p>}
     </div>
@@ -125,7 +129,12 @@ const SEVERITY_STYLE: Record<Severity, string> = {
 
 export function SeverityBadge({ severity }: { severity: Severity }) {
   return (
-    <span className={cn("rounded-md border px-2 py-0.5 text-[11px] font-bold", SEVERITY_STYLE[severity])}>
+    <span
+      className={cn(
+        "rounded-md border px-2 py-0.5 text-[11px] font-bold",
+        SEVERITY_STYLE[severity],
+      )}
+    >
       {severity}
     </span>
   );
@@ -151,10 +160,26 @@ export function StatusPill({ status }: { status: SosStatus }) {
 const QUALITY_STYLE: Record<DataQuality, { label: string; className: string; icon: string }> = {
   LIVE: { label: "Live", className: "border-safe/50 bg-safe/15 text-safe", icon: "◉" },
   RECENT: { label: "Recent", className: "border-primary/40 bg-primary/10 text-primary", icon: "◎" },
-  STALE: { label: "Stale", className: "border-moderate/40 bg-moderate/10 text-moderate", icon: "◔" },
-  CACHED: { label: "Cached", className: "border-stale/40 bg-muted text-muted-foreground", icon: "▣" },
-  SIMULATED: { label: "Simulated", className: "border-accent/50 bg-accent/15 text-accent", icon: "⚠" },
-  UNAVAILABLE: { label: "Unavailable", className: "border-border bg-muted text-muted-foreground", icon: "—" },
+  STALE: {
+    label: "Stale",
+    className: "border-moderate/40 bg-moderate/10 text-moderate",
+    icon: "◔",
+  },
+  CACHED: {
+    label: "Cached",
+    className: "border-stale/40 bg-muted text-muted-foreground",
+    icon: "▣",
+  },
+  SIMULATED: {
+    label: "Simulated",
+    className: "border-accent/50 bg-accent/15 text-accent",
+    icon: "⚠",
+  },
+  UNAVAILABLE: {
+    label: "Unavailable",
+    className: "border-border bg-muted text-muted-foreground",
+    icon: "—",
+  },
 };
 
 export function DataTag({ quality, at }: { quality: DataQuality; at?: string | null }) {
@@ -179,7 +204,10 @@ export function DataTag({ quality, at }: { quality: DataQuality; at?: string | n
 export function LoadingState({ label = "Loading" }: { label?: string }) {
   return (
     <div role="status" className="flex items-center gap-3 p-6 text-sm text-muted-foreground">
-      <span className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent" aria-hidden />
+      <span
+        className="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent"
+        aria-hidden
+      />
       {label}…
     </div>
   );
@@ -187,7 +215,10 @@ export function LoadingState({ label = "Loading" }: { label?: string }) {
 
 export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
   return (
-    <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm">
+    <div
+      role="alert"
+      className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm"
+    >
       <p className="font-semibold text-destructive">Something went wrong</p>
       <p className="mt-1 text-muted-foreground">{message}</p>
       {onRetry && (
