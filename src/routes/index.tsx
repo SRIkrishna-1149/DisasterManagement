@@ -236,7 +236,11 @@ function HomeRoute() {
             value={activeSos.length}
             hint={user ? "Track response progress" : "Sign in to track your requests"}
           />
-          <Stat label="Map Engine" value="Static AP Map" hint="Local road routes & facilities" />
+          <Stat
+            label="Map Engine"
+            value="Satellite Operations Map"
+            hint="Aerial basemap & local road routing"
+          />
         </section>
 
         {/* Main Map & Live Feeds Grid */}
