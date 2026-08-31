@@ -508,10 +508,10 @@ function OperationsMapContent({
         ref={containerRef}
         role="application"
         aria-label="Google Maps Andhra Pradesh response area"
-        className="relative min-h-[380px] w-full overflow-hidden rounded-xl border border-border bg-[#0f172a] sm:min-h-[460px] lg:min-h-[520px]"
+        className="relative 'min-h-[380px]' w-full overflow-hidden rounded-xl border border-border bg-[#0f172a] sm:'min-h-[460px] lg:min-h-[520px]'"
       >
         {/* Map Canvas */}
-        <div className="h-full w-full min-h-[380px] sm:min-h-[460px] lg:min-h-[520px]" />
+        <div className="h-full w-full 'min-h-[380px]' sm:'min-h-[460px]' lg:'min-h-[520px]'" />
 
         {/* Loading Overlay */}
         {!mapLoaded && !loadError && (
@@ -610,7 +610,7 @@ function OperationsMapContent({
 
         {/* Layers Drawer / Popover */}
         {showLayers && (
-          <div className="absolute bottom-3 left-3 max-w-[280px] rounded-lg border border-cyan-100/20 bg-[#0f172a]/95 p-3.5 text-xs text-cyan-50 shadow-2xl backdrop-blur-md z-20">
+          <div className="absolute bottom-3 left-3 'max-w-[280px]' rounded-lg border border-cyan-100/20 bg-[#0f172a]/95 p-3.5 text-xs text-cyan-50 shadow-2xl backdrop-blur-md z-20">
             <div className="flex items-center justify-between border-b border-border/60 pb-2">
               <p className="font-semibold">Map Layers</p>
               <button
