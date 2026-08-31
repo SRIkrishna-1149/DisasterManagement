@@ -29,7 +29,7 @@ export function configureGoogleMaps(apiKey = GOOGLE_MAPS_API_KEY): void {
       v: "weekly",
       region: "IN",
       language: "en",
-      libraries: ["places", "routes", "geometry", "marker"],
+      libraries: ["places", "geometry", "marker"],
     });
     configured = true;
   }
@@ -55,19 +55,24 @@ export async function loadGoogleMaps(
   loadPromise = Promise.all([
     importLibrary("maps"),
     importLibrary("places"),
-    importLibrary("routes"),
     importLibrary("geometry"),
     importLibrary("marker"),
-  ]).then(() => {
-    const w =
-      typeof window !== "undefined"
-        ? (window as unknown as { google?: typeof globalThis.google })
-        : null;
-    if (w?.google) {
-      return w.google;
-    }
-    throw new Error("Google Maps API script loaded but window.google is undefined");
-  });
+  ])
+    .then(() => {
+      const w =
+        typeof window !== "undefined"
+          ? (window as unknown as { google?: typeof globalThis.google })
+          : null;
+      if (w?.google) {
+        return w.google;
+      }
+      throw new Error("Google Maps API script loaded but window.google is undefined");
+    })
+    .catch((err) => {
+      // Reset loadPromise on failure so future retry attempts can re-attempt loading
+      loadPromise = null;
+      throw err;
+    });
 
   return loadPromise;
 }

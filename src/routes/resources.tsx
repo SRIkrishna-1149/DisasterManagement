@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   Building2,
   Crosshair,
@@ -17,8 +17,8 @@ import {
 import { OperationsMap, type MapMarker } from "@/components/map-panel";
 import { Button, DataTag, EmptyState, ErrorState, Panel } from "@/components/kit";
 import { PageFrame } from "@/components/portal";
-import { AP_CENTER, formatTimeAgo, isInsideAndhraPradesh, type DataQuality } from "@/lib/domain";
-import { haversineKm } from "@/lib/geo";
+import { AP_CENTER, isInsideAndhraPradesh } from "@/lib/domain";
+import { haversineKm, isValidCoordinate, type LatLng } from "@/lib/geo";
 import { useEmergencyLocation } from "@/hooks/useEmergencyLocation";
 import {
   searchNearbyGooglePlaces,
@@ -35,7 +35,9 @@ import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
 
 type ResourceRow = Tables<"emergency_resources">;
-type ResourceStatus = ResourceRow["status"];
+
+export type RoutingState =
+  "idle" | "requesting-location" | "calculating-route" | "success" | "error" | "cancelled";
 
 export const Route = createFileRoute("/resources")({ component: ResourcesRoute });
 
@@ -46,10 +48,16 @@ function ResourcesRoute() {
   const [selectedFacilityId, setSelectedFacilityId] = useState<string | null>(null);
   const [activeRoutes, setActiveRoutes] = useState<CalculatedRoute[]>([]);
   const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
-  const [routingBusy, setRoutingBusy] = useState(false);
+  const [routingState, setRoutingState] = useState<RoutingState>("idle");
   const [routeError, setRouteError] = useState<string | null>(null);
+  const activeRequestIdRef = useRef(0);
 
-  const { location, status: locStatus, request: requestLocation } = useEmergencyLocation();
+  const {
+    location,
+    status: locStatus,
+    request: requestLocation,
+    getCurrentLocation,
+  } = useEmergencyLocation();
 
   // 1. Fetch verified database records from Supabase
   const dbResources = useQuery({
@@ -148,26 +156,78 @@ function ResourcesRoute() {
     [combinedFacilities, selectedFacilityId],
   );
 
-  // Compute real road routes when target changes
-  useEffect(() => {
-    if (!selectedFacility) {
+  // Compute real road routes with state machine, generation token, and live GPS acquisition
+  const handleRouteHere = useCallback(
+    async (facility: NearbyFacility) => {
+      setSelectedFacilityId(facility.id);
+      setSelectedRouteIndex(0);
       setActiveRoutes([]);
       setRouteError(null);
-      return;
-    }
 
-    let active = true;
-    setRoutingBusy(true);
-    setRouteError(null);
+      // Validate destination
+      if (!isValidCoordinate(facility.lat, facility.lng)) {
+        setRouteError("Selected destination contains invalid geographic coordinates.");
+        setRoutingState("error");
+        return;
+      }
+      if (!isInsideAndhraPradesh(facility.lat, facility.lng)) {
+        setRouteError("Selected facility is located outside the Andhra Pradesh operating area.");
+        setRoutingState("error");
+        return;
+      }
 
-    const origin =
-      location && isInsideAndhraPradesh(location.lat, location.lng)
-        ? { lat: location.lat, lng: location.lng }
-        : AP_CENTER;
+      const reqId = ++activeRequestIdRef.current;
 
-    calculateGoogleRoutes(origin, { lat: selectedFacility.lat, lng: selectedFacility.lng })
-      .then((routes) => {
-        if (!active) return;
+      try {
+        let originCoord: LatLng | null = null;
+        if (
+          location &&
+          isValidCoordinate(location.lat, location.lng) &&
+          isInsideAndhraPradesh(location.lat, location.lng)
+        ) {
+          originCoord = { lat: location.lat, lng: location.lng };
+        } else {
+          // Request fresh high-accuracy device location
+          setRoutingState("requesting-location");
+          try {
+            const freshLoc = await getCurrentLocation(12000);
+            if (activeRequestIdRef.current !== reqId) return; // Stale request
+            originCoord = { lat: freshLoc.lat, lng: freshLoc.lng };
+          } catch (locErr) {
+            if (activeRequestIdRef.current !== reqId) return;
+            setRoutingState("error");
+            setRouteError(
+              locErr instanceof Error
+                ? locErr.message
+                : "Unable to acquire current device location for route origin. Please ensure location permission is allowed.",
+            );
+            return;
+          }
+        }
+
+        if (!originCoord) {
+          if (activeRequestIdRef.current !== reqId) return;
+          setRoutingState("error");
+          setRouteError("Unable to determine current location origin for routing.");
+          return;
+        }
+
+        setRoutingState("calculating-route");
+        const routes = await calculateGoogleRoutes(
+          originCoord,
+          { lat: facility.lat, lng: facility.lng },
+          "DRIVING",
+          15000,
+        );
+
+        if (activeRequestIdRef.current !== reqId) return; // Stale response protection
+
+        if (!routes || routes.length === 0) {
+          setRoutingState("error");
+          setRouteError("No road routes returned by Google Maps for this destination.");
+          return;
+        }
+
         const hazardZones = (riskQuery.data ?? []).map((r) => ({
           id: r.id,
           title: r.area_name,
@@ -184,25 +244,24 @@ function ResourcesRoute() {
         }));
 
         const evaluated = evaluateRouteHazards(routes, hazardZones);
+        if (activeRequestIdRef.current !== reqId) return;
+
         setActiveRoutes(evaluated);
         setSelectedRouteIndex(0);
-      })
-      .catch((err) => {
-        if (active) {
-          console.warn("Route computation error:", err);
-          setRouteError(
-            "Road route calculation failed. Google Directions may be temporarily unavailable.",
-          );
-        }
-      })
-      .finally(() => {
-        if (active) setRoutingBusy(false);
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [selectedFacility, location, riskQuery.data]);
+        setRoutingState("success");
+        setRouteError(null);
+      } catch (err) {
+        if (activeRequestIdRef.current !== reqId) return;
+        setRoutingState("error");
+        setRouteError(
+          err instanceof Error
+            ? err.message
+            : "Road route calculation failed. Google Directions may be temporarily unavailable.",
+        );
+      }
+    },
+    [location, getCurrentLocation, riskQuery.data],
+  );
 
   const markers: MapMarker[] = useMemo(
     () =>
@@ -221,6 +280,8 @@ function ResourcesRoute() {
   );
 
   const activeRoute = activeRoutes[selectedRouteIndex] ?? null;
+  const isRoutingBusy =
+    routingState === "requesting-location" || routingState === "calculating-route";
 
   return (
     <PageFrame
@@ -250,6 +311,9 @@ function ResourcesRoute() {
             onClick={() => {
               setKind(value as typeof kind);
               setSelectedFacilityId(null);
+              setActiveRoutes([]);
+              setRoutingState("idle");
+              setRouteError(null);
             }}
             className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${
               kind === value
@@ -306,7 +370,8 @@ function ResourcesRoute() {
                   key={facility.id}
                   facility={facility}
                   isSelected={selectedFacility?.id === facility.id}
-                  onSelect={() => setSelectedFacilityId(facility.id)}
+                  isRoutingBusy={selectedFacility?.id === facility.id && isRoutingBusy}
+                  onSelect={() => handleRouteHere(facility)}
                 />
               ))}
             </div>
@@ -324,29 +389,51 @@ function ResourcesRoute() {
               selectedFacility ? `Route to ${selectedFacility.name}` : "Emergency facilities map"
             }
             onSelectMarker={(m) => {
-              if (m) setSelectedFacilityId(m.id);
+              if (m) {
+                const fac = combinedFacilities.find((f) => f.id === m.id);
+                if (fac) handleRouteHere(fac);
+              }
+            }}
+            onRouteToMarker={(m) => {
+              const fac = combinedFacilities.find((f) => f.id === m.id);
+              if (fac) handleRouteHere(fac);
             }}
           />
 
           {/* Route Details Panel */}
           {selectedFacility && (
             <Panel title="Road Route & Safety Assessment">
-              {routingBusy ? (
+              {routingState === "requesting-location" ? (
+                <p className="flex items-center gap-2 text-sm text-muted-foreground py-2">
+                  <Crosshair className="h-4 w-4 animate-spin text-primary" />
+                  Acquiring device GPS coordinates…
+                </p>
+              ) : routingState === "calculating-route" ? (
                 <p className="flex items-center gap-2 text-sm text-muted-foreground py-2">
                   <RefreshCw className="h-4 w-4 animate-spin text-primary" />
                   Calculating real road directions via Google Maps…
                 </p>
-              ) : routeError ? (
-                <div className="rounded-lg border border-accent/40 bg-accent/10 p-3 text-xs text-accent">
+              ) : routingState === "error" || routeError ? (
+                <div className="rounded-lg border border-accent/40 bg-accent/10 p-3.5 text-xs text-accent space-y-2">
                   <p className="font-semibold">{routeError}</p>
-                  <a
-                    href={selectedFacility.googleMapsUrl || "#"}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="mt-2 inline-block font-bold underline"
-                  >
-                    Open directly in Google Maps ↗
-                  </a>
+                  <div className="flex flex-wrap items-center gap-2 pt-1">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => handleRouteHere(selectedFacility)}
+                    >
+                      <RefreshCw className="h-3 w-3" />
+                      Retry route calculation
+                    </Button>
+                    <a
+                      href={selectedFacility.googleMapsUrl || "#"}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex min-h-8 items-center gap-1 font-bold underline text-accent hover:brightness-125"
+                    >
+                      Open directly in Google Maps ↗
+                    </a>
+                  </div>
                 </div>
               ) : activeRoute ? (
                 <div className="space-y-3">
@@ -444,10 +531,12 @@ function ResourcesRoute() {
 function FacilityCard({
   facility,
   isSelected,
+  isRoutingBusy,
   onSelect,
 }: {
   facility: NearbyFacility;
   isSelected: boolean;
+  isRoutingBusy?: boolean;
   onSelect: () => void;
 }) {
   const isHospital = facility.type === "hospital";
@@ -520,14 +609,15 @@ function FacilityCard({
           <button
             type="button"
             onClick={onSelect}
+            disabled={isRoutingBusy}
             className={`inline-flex min-h-8 items-center gap-1.5 rounded-md px-3 text-xs font-bold ${
               isSelected
                 ? "bg-primary text-primary-foreground"
                 : "border border-primary/40 bg-primary/10 text-primary hover:bg-primary/20"
-            }`}
+            } disabled:opacity-60`}
           >
             <RouteIcon className="h-3 w-3" />
-            {isSelected ? "Routing..." : "Route here"}
+            {isRoutingBusy ? "Routing…" : isSelected ? "Selected" : "Route here"}
           </button>
         </div>
       </div>

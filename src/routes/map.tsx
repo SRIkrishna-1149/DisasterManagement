@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { AlertTriangle, Filter, MapPinned, Radio, ShieldAlert, Navigation } from "lucide-react";
 import { OperationsMap, type MapMarker } from "@/components/map-panel";
 import {
@@ -34,7 +34,7 @@ export const Route = createFileRoute("/map")({ component: MapRoute });
 
 function MapRoute() {
   const { user, isOperator } = useAuth();
-  const { location: userLoc } = useEmergencyLocation();
+  const { location: userLoc, getCurrentLocation } = useEmergencyLocation();
   const [activeRoute, setActiveRoute] = useState<CalculatedRoute | null>(null);
   const [routingTarget, setRoutingTarget] = useState<MapMarker | null>(null);
 
@@ -223,14 +223,34 @@ function MapRoute() {
   const highRisks = (risks.data ?? []).filter((row) => row.risk_score >= 60);
   const activeAlerts = (alerts.data ?? []).filter((row) => row.approval_status === "APPROVED");
 
+  const mapRouteReqIdRef = useRef(0);
+
   const handleRouteToMarker = async (marker: MapMarker) => {
-    if (!userLoc) return;
+    const reqId = ++mapRouteReqIdRef.current;
     setRoutingTarget(marker);
+
+    let origin = userLoc ? { lat: userLoc.lat, lng: userLoc.lng } : null;
+    if (!origin) {
+      try {
+        const fresh = await getCurrentLocation(10000);
+        if (mapRouteReqIdRef.current !== reqId) return;
+        origin = { lat: fresh.lat, lng: fresh.lng };
+      } catch (e) {
+        if (mapRouteReqIdRef.current !== reqId) return;
+        console.warn("Could not acquire GPS for map routing:", e);
+        return;
+      }
+    }
+
     try {
       const calculated = await calculateGoogleRoutes(
-        { lat: userLoc.lat, lng: userLoc.lng },
+        origin,
         { lat: marker.lat, lng: marker.lng },
+        "DRIVING",
+        15000,
       );
+      if (mapRouteReqIdRef.current !== reqId) return;
+
       if (calculated.length > 0) {
         const evaluated = evaluateRouteHazards(calculated, [
           ...highRisks.map((r) => ({
@@ -244,10 +264,14 @@ function MapRoute() {
             source: "Risk assessment",
           })),
         ]);
-        setActiveRoute(evaluated[0] ?? null);
+        if (mapRouteReqIdRef.current === reqId) {
+          setActiveRoute(evaluated[0] ?? null);
+        }
       }
     } catch (err) {
-      console.warn("Failed to calculate route:", err);
+      if (mapRouteReqIdRef.current === reqId) {
+        console.warn("Failed to calculate route on map:", err);
+      }
     }
   };
 

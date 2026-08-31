@@ -31,31 +31,34 @@ export interface CalculatedRoute {
   hazardReason: string | null;
 }
 
-// In-memory cache for computed routes
+// In-memory cache for computed routes to avoid redundant requests
 const routesCache = new Map<string, { timestamp: number; routes: CalculatedRoute[] }>();
 const ROUTE_CACHE_TTL = 3 * 60 * 1000; // 3 minutes
 
+const ROUTE_TIMEOUT_MS = 15000; // 15 seconds hard timeout
+
 /**
  * Calculates deterministic, actual road network routes between origin and destination using Google Directions.
- * Supports multiple route options with distance, estimated travel time, and step-by-step turn guidance.
+ * Protected with hard timeout, status code translation, and input validation.
  */
 export async function calculateGoogleRoutes(
   origin: LatLng,
   destination: LatLng,
   travelMode: "DRIVING" | "WALKING" = "DRIVING",
+  timeoutMs = ROUTE_TIMEOUT_MS,
 ): Promise<CalculatedRoute[]> {
   if (
     !isValidCoordinate(origin.lat, origin.lng) ||
     !isValidCoordinate(destination.lat, destination.lng)
   ) {
-    throw new Error("Invalid origin or destination coordinates.");
+    throw new Error("Invalid origin or destination geographic coordinates.");
   }
 
   if (
     !isInsideAndhraPradesh(origin.lat, origin.lng) &&
     !isInsideAndhraPradesh(destination.lat, destination.lng)
   ) {
-    throw new Error("Route endpoints are outside the Andhra Pradesh operating area.");
+    throw new Error("Route locations are outside the Andhra Pradesh operational area.");
   }
 
   const cacheKey = `${origin.lat.toFixed(4)},${origin.lng.toFixed(4)}->${destination.lat.toFixed(4)},${destination.lng.toFixed(4)}_${travelMode}`;
@@ -70,7 +73,7 @@ export async function calculateGoogleRoutes(
   const mode =
     travelMode === "WALKING" ? google.maps.TravelMode.WALKING : google.maps.TravelMode.DRIVING;
 
-  const result = await new Promise<google.maps.DirectionsResult>((resolve, reject) => {
+  const routePromise = new Promise<google.maps.DirectionsResult>((resolve, reject) => {
     directionsService.route(
       {
         origin: new google.maps.LatLng(origin.lat, origin.lng),
@@ -83,11 +86,38 @@ export async function calculateGoogleRoutes(
         if (status === google.maps.DirectionsStatus.OK && res) {
           resolve(res);
         } else {
-          reject(new Error(`Directions calculation failed: ${status}`));
+          let errorMsg = `Directions calculation failed: ${status}`;
+          if (status === google.maps.DirectionsStatus.ZERO_RESULTS) {
+            errorMsg =
+              "No drivable road route was found between your location and this destination.";
+          } else if (status === google.maps.DirectionsStatus.NOT_FOUND) {
+            errorMsg = "One of the route locations could not be identified on the road network.";
+          } else if (status === google.maps.DirectionsStatus.OVER_QUERY_LIMIT) {
+            errorMsg =
+              "Google Maps route request limit reached. Please wait a moment and try again.";
+          } else if (status === google.maps.DirectionsStatus.REQUEST_DENIED) {
+            errorMsg =
+              "Google Maps Directions API request was denied. Please verify API key configuration.";
+          } else if (status === google.maps.DirectionsStatus.UNKNOWN_ERROR) {
+            errorMsg = "A temporary Google Maps server error occurred. Please retry.";
+          }
+          reject(new Error(errorMsg));
         }
       },
     );
   });
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => {
+      reject(
+        new Error(
+          "Route calculation timed out after 15 seconds. Please check your network connection and try again.",
+        ),
+      );
+    }, timeoutMs);
+  });
+
+  const result = await Promise.race([routePromise, timeoutPromise]);
 
   const routes: CalculatedRoute[] = result.routes.map((gRoute, index) => {
     const leg = gRoute.legs[0];
@@ -102,9 +132,8 @@ export async function calculateGoogleRoutes(
       lng: point.lng(),
     }));
 
-    // Steps
+    // Turn by turn steps
     const steps: RouteStep[] = (leg?.steps ?? []).map((step) => {
-      // Strip HTML tags from instructions
       const tempDiv = document.createElement("div");
       tempDiv.innerHTML = step.instructions || "";
       const cleanText = tempDiv.textContent || tempDiv.innerText || "";

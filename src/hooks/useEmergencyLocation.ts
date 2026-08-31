@@ -23,33 +23,15 @@ export function useEmergencyLocation(autoRequest = true) {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const watchIdRef = useRef<number | null>(null);
 
-  const handlePosition = useCallback((position: GeolocationPosition) => {
+  const handlePosition = useCallback((position: GeolocationPosition): EmergencyLocation | null => {
     const { latitude, longitude, accuracy, heading, speed } = position.coords;
     if (!isValidCoordinate(latitude, longitude)) {
       setStatus("unavailable");
       setErrorMessage("Received invalid GPS coordinates from device.");
-      return;
+      return null;
     }
 
-    if (!isInsideAndhraPradesh(latitude, longitude)) {
-      setStatus("outside-region");
-      setErrorMessage(
-        "Your current location is outside the Andhra Pradesh disaster-management coverage area.",
-      );
-      setLocation({
-        lat: latitude,
-        lng: longitude,
-        source: "GPS",
-        accuracyM: Number.isFinite(accuracy) ? accuracy : null,
-        heading: Number.isFinite(heading) ? heading : null,
-        speed: Number.isFinite(speed) ? speed : null,
-        landmark: null,
-        capturedAt: new Date().toISOString(),
-      });
-      return;
-    }
-
-    setLocation({
+    const loc: EmergencyLocation = {
       lat: latitude,
       lng: longitude,
       source: "GPS",
@@ -58,16 +40,28 @@ export function useEmergencyLocation(autoRequest = true) {
       speed: Number.isFinite(speed) ? speed : null,
       landmark: null,
       capturedAt: new Date().toISOString(),
-    });
+    };
+
+    if (!isInsideAndhraPradesh(latitude, longitude)) {
+      setStatus("outside-region");
+      setErrorMessage(
+        "Your current location is outside the Andhra Pradesh disaster-management coverage area.",
+      );
+      setLocation(loc);
+      return loc;
+    }
+
+    setLocation(loc);
     setStatus("ready");
     setErrorMessage(null);
+    return loc;
   }, []);
 
   const handleError = useCallback((error: GeolocationPositionError) => {
     if (error.code === error.PERMISSION_DENIED) {
       setStatus("denied");
       setErrorMessage(
-        "Location permission was denied. Please allow location access in your browser or device settings to view nearby emergency facilities.",
+        "Location permission was denied. Please allow location access in your browser or device settings to view nearby emergency facilities and calculate road routes.",
       );
     } else if (error.code === error.TIMEOUT) {
       setStatus("timeout");
@@ -87,12 +81,69 @@ export function useEmergencyLocation(autoRequest = true) {
     setStatus("locating");
     setErrorMessage(null);
 
-    navigator.geolocation.getCurrentPosition(handlePosition, handleError, {
-      enableHighAccuracy: true,
-      timeout: 15000,
-      maximumAge: 10000,
-    });
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        handlePosition(pos);
+      },
+      handleError,
+      {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 10000,
+      },
+    );
   }, [handlePosition, handleError]);
+
+  /**
+   * Directly request and await the user's fresh GPS coordinates with a guaranteed promise exit.
+   */
+  const getCurrentLocation = useCallback(
+    (timeoutMs = 12000): Promise<EmergencyLocation> => {
+      return new Promise((resolve, reject) => {
+        if (typeof navigator === "undefined" || !navigator.geolocation) {
+          const msg = "Geolocation is not supported by your browser or device.";
+          setStatus("unavailable");
+          setErrorMessage(msg);
+          reject(new Error(msg));
+          return;
+        }
+
+        setStatus("locating");
+        setErrorMessage(null);
+
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const loc = handlePosition(pos);
+            if (loc) {
+              resolve(loc);
+            } else {
+              reject(new Error("Invalid GPS coordinates received."));
+            }
+          },
+          (err) => {
+            handleError(err);
+            if (err.code === err.PERMISSION_DENIED) {
+              reject(
+                new Error(
+                  "Location permission denied. Please allow location access in your device settings to calculate routes.",
+                ),
+              );
+            } else if (err.code === err.TIMEOUT) {
+              reject(new Error("GPS location request timed out. Please check your signal."));
+            } else {
+              reject(new Error("Unable to obtain GPS location from device."));
+            }
+          },
+          {
+            enableHighAccuracy: true,
+            timeout: timeoutMs,
+            maximumAge: 5000,
+          },
+        );
+      });
+    },
+    [handlePosition, handleError],
+  );
 
   const startWatching = useCallback(() => {
     if (typeof navigator === "undefined" || !navigator.geolocation) {
@@ -104,11 +155,17 @@ export function useEmergencyLocation(autoRequest = true) {
     setStatus("locating");
     setIsWatching(true);
 
-    const id = navigator.geolocation.watchPosition(handlePosition, handleError, {
-      enableHighAccuracy: true,
-      timeout: 15000,
-      maximumAge: 5000,
-    });
+    const id = navigator.geolocation.watchPosition(
+      (pos) => {
+        handlePosition(pos);
+      },
+      handleError,
+      {
+        enableHighAccuracy: true,
+        timeout: 15000,
+        maximumAge: 5000,
+      },
+    );
     watchIdRef.current = id;
   }, [handlePosition, handleError]);
 
@@ -153,6 +210,7 @@ export function useEmergencyLocation(autoRequest = true) {
     errorMessage,
     isWatching,
     request,
+    getCurrentLocation,
     startWatching,
     stopWatching,
     setManual,

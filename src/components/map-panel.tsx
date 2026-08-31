@@ -1,7 +1,6 @@
 import {
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type ReactNode,
@@ -22,7 +21,7 @@ import {
 } from "lucide-react";
 import { MarkerClusterer } from "@googlemaps/markerclusterer";
 import { cn } from "@/lib/utils";
-import { type LatLng, haversineKm } from "@/lib/geo";
+import { type LatLng } from "@/lib/geo";
 import { AP_BOUNDS, AP_CENTER, isInsideAndhraPradesh, type DataQuality } from "@/lib/domain";
 import { loadGoogleMaps, isGoogleMapsConfigured } from "@/lib/google-maps-loader";
 import type { CalculatedRoute } from "@/lib/google-routes";
@@ -152,7 +151,15 @@ function OperationsMapContent({
   centerOn,
   actions,
 }: OperationsMapProps) {
-  const containerRef = useRef<HTMLDivElement | null>(null);
+  // CRITICAL ARCHITECTURE RULE:
+  // outerContainerRef is managed by React for responsive sizing, fullscreen, and positioning.
+  // mapDivRef is a dedicated, EMPTY leaf DOM element exclusively owned and rendered into by Google Maps.
+  // React NEVER inserts any JSX children into mapDivRef, completely preventing removeChild errors.
+  const outerContainerRef = useRef<HTMLDivElement | null>(null);
+  const mapDivRef = useRef<HTMLDivElement | null>(null);
+
+  const isMountedRef = useRef(false);
+  const initIdRef = useRef(0);
   const mapInstanceRef = useRef<google.maps.Map | null>(null);
   const markersRef = useRef<google.maps.Marker[]>([]);
   const clustererRef = useRef<MarkerClusterer | null>(null);
@@ -160,6 +167,12 @@ function OperationsMapContent({
   const accuracyCircleRef = useRef<google.maps.Circle | null>(null);
   const pinMarkerRef = useRef<google.maps.Marker | null>(null);
   const polylineRef = useRef<google.maps.Polyline | null>(null);
+
+  const onMapClickRef = useRef(onMapClick);
+  onMapClickRef.current = onMapClick;
+
+  const onSelectMarkerRef = useRef(onSelectMarker);
+  onSelectMarkerRef.current = onSelectMarker;
 
   const [mapLoaded, setMapLoaded] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -169,21 +182,26 @@ function OperationsMapContent({
   const [followUser, setFollowUser] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
-  // Initialize Google Map
+  // Initialize Google Map safely with generation token and idempotent cleanup
   useEffect(() => {
-    let active = true;
-    if (!containerRef.current) return;
+    isMountedRef.current = true;
+    const currentInitId = ++initIdRef.current;
+
+    if (!mapDivRef.current) return;
 
     loadGoogleMaps()
       .then((google) => {
-        if (!active || !containerRef.current) return;
+        // Abandon if component unmounted or another initialization started
+        if (!isMountedRef.current || initIdRef.current !== currentInitId || !mapDivRef.current) {
+          return;
+        }
 
         const apBounds = new google.maps.LatLngBounds(
           new google.maps.LatLng(AP_BOUNDS.minLat, AP_BOUNDS.minLng),
           new google.maps.LatLng(AP_BOUNDS.maxLat, AP_BOUNDS.maxLng),
         );
 
-        const map = new google.maps.Map(containerRef.current, {
+        const map = new google.maps.Map(mapDivRef.current, {
           center: { lat: AP_CENTER.lat, lng: AP_CENTER.lng },
           zoom: 7.5,
           minZoom: 6,
@@ -202,25 +220,27 @@ function OperationsMapContent({
         });
 
         map.addListener("click", (e: google.maps.MapMouseEvent) => {
-          if (e.latLng && onMapClick) {
+          if (e.latLng && onMapClickRef.current) {
             const lat = e.latLng.lat();
             const lng = e.latLng.lng();
             if (isInsideAndhraPradesh(lat, lng)) {
-              onMapClick({ lat, lng });
+              onMapClickRef.current({ lat, lng });
             }
           }
         });
 
-        // Suspend follow-me if user manually drags the map
+        // Suspend follow-me if user manually drags/pans the map
         map.addListener("dragstart", () => {
-          setFollowUser(false);
+          if (isMountedRef.current) {
+            setFollowUser(false);
+          }
         });
 
         mapInstanceRef.current = map;
         setMapLoaded(true);
       })
       .catch((err) => {
-        if (active) {
+        if (isMountedRef.current && initIdRef.current === currentInitId) {
           console.warn("Failed to load Google Maps JS API:", err);
           setLoadError(
             err instanceof Error ? err.message : "Google Maps Platform script could not be loaded.",
@@ -229,29 +249,58 @@ function OperationsMapContent({
       });
 
     return () => {
-      active = false;
-      if (clustererRef.current) {
-        clustererRef.current.clearMarkers();
+      isMountedRef.current = false;
+
+      // Clean up Google Maps objects safely without touching React DOM
+      try {
+        if (clustererRef.current) {
+          clustererRef.current.clearMarkers();
+          clustererRef.current = null;
+        }
+        markersRef.current.forEach((m) => m.setMap(null));
+        markersRef.current = [];
+
+        userMarkerRef.current?.setMap(null);
+        userMarkerRef.current = null;
+
+        accuracyCircleRef.current?.setMap(null);
+        accuracyCircleRef.current = null;
+
+        pinMarkerRef.current?.setMap(null);
+        pinMarkerRef.current = null;
+
+        polylineRef.current?.setMap(null);
+        polylineRef.current = null;
+
+        if (mapInstanceRef.current && typeof window !== "undefined" && window.google?.maps?.event) {
+          window.google.maps.event.clearInstanceListeners(mapInstanceRef.current);
+        }
+        mapInstanceRef.current = null;
+      } catch (cleanupError) {
+        console.warn("Map cleanup warning:", cleanupError);
       }
-      markersRef.current.forEach((m) => m.setMap(null));
-      markersRef.current = [];
-      userMarkerRef.current?.setMap(null);
-      polylineRef.current?.setMap(null);
     };
-  }, [onMapClick]);
+  }, []);
 
   // Center on explicit coordinate request
   useEffect(() => {
-    if (!mapInstanceRef.current || !centerOn) return;
+    if (!mapLoaded || !isMountedRef.current || !mapInstanceRef.current || !centerOn) return;
     mapInstanceRef.current.panTo({ lat: centerOn.lat, lng: centerOn.lng });
     if (mapInstanceRef.current.getZoom()! < 12) {
       mapInstanceRef.current.setZoom(13);
     }
-  }, [centerOn]);
+  }, [centerOn, mapLoaded]);
 
   // Handle User Location Marker & Accuracy Circle
   useEffect(() => {
-    if (!mapInstanceRef.current || typeof window === "undefined" || !window.google?.maps) return;
+    if (
+      !mapLoaded ||
+      !isMountedRef.current ||
+      !mapInstanceRef.current ||
+      typeof window === "undefined" ||
+      !window.google?.maps
+    )
+      return;
     const google = window.google;
     const map = mapInstanceRef.current;
 
@@ -301,6 +350,7 @@ function OperationsMapContent({
         zIndex: 999,
       });
       userMarkerRef.current.addListener("click", () => {
+        if (!isMountedRef.current) return;
         setSelected({
           id: "user-loc",
           label: "Your Current Location",
@@ -319,11 +369,18 @@ function OperationsMapContent({
     if (followUser) {
       map.panTo(pos);
     }
-  }, [userLocation, userAccuracyM, followUser]);
+  }, [userLocation, userAccuracyM, followUser, mapLoaded]);
 
   // Handle Manual Pin (e.g. for /sos pin drop)
   useEffect(() => {
-    if (!mapInstanceRef.current || typeof window === "undefined" || !window.google?.maps) return;
+    if (
+      !mapLoaded ||
+      !isMountedRef.current ||
+      !mapInstanceRef.current ||
+      typeof window === "undefined" ||
+      !window.google?.maps
+    )
+      return;
     const google = window.google;
     const map = mapInstanceRef.current;
 
@@ -352,11 +409,11 @@ function OperationsMapContent({
       });
 
       pinMarkerRef.current.addListener("dragend", (e: google.maps.MapMouseEvent) => {
-        if (e.latLng && onMapClick) {
+        if (e.latLng && onMapClickRef.current) {
           const lat = e.latLng.lat();
           const lng = e.latLng.lng();
           if (isInsideAndhraPradesh(lat, lng)) {
-            onMapClick({ lat, lng });
+            onMapClickRef.current({ lat, lng });
           }
         }
       });
@@ -364,12 +421,13 @@ function OperationsMapContent({
       pinMarkerRef.current.setPosition(pos);
       pinMarkerRef.current.setMap(map);
     }
-  }, [pin, onMapClick]);
+  }, [pin, mapLoaded]);
 
   // Render Clustered Facility / Alert / Incident Markers
   useEffect(() => {
     if (
       !mapLoaded ||
+      !isMountedRef.current ||
       !mapInstanceRef.current ||
       typeof window === "undefined" ||
       !window.google?.maps
@@ -378,7 +436,7 @@ function OperationsMapContent({
     const google = window.google;
     const map = mapInstanceRef.current;
 
-    // Clear old markers
+    // Clear old markers safely
     if (clustererRef.current) {
       clustererRef.current.clearMarkers();
     }
@@ -406,8 +464,9 @@ function OperationsMapContent({
       });
 
       gMarker.addListener("click", () => {
+        if (!isMountedRef.current) return;
         setSelected(marker);
-        onSelectMarker?.(marker);
+        onSelectMarkerRef.current?.(marker);
       });
 
       return gMarker;
@@ -415,12 +474,13 @@ function OperationsMapContent({
 
     markersRef.current = gMarkers;
     clustererRef.current = new MarkerClusterer({ map, markers: gMarkers });
-  }, [markers, hiddenKinds, mapLoaded, onSelectMarker]);
+  }, [markers, hiddenKinds, mapLoaded]);
 
   // Render Real Road Network Polyline
   useEffect(() => {
     if (
       !mapLoaded ||
+      !isMountedRef.current ||
       !mapInstanceRef.current ||
       typeof window === "undefined" ||
       !window.google?.maps
@@ -473,9 +533,9 @@ function OperationsMapContent({
   }, [userLocation]);
 
   const toggleFullscreen = useCallback(() => {
-    if (!containerRef.current) return;
+    if (!outerContainerRef.current) return;
     if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen?.().catch(() => {});
+      outerContainerRef.current.requestFullscreen?.().catch(() => {});
       setIsFullscreen(true);
     } else {
       document.exitFullscreen?.().catch(() => {});
@@ -504,18 +564,23 @@ function OperationsMapContent({
         </div>
       }
     >
+      {/* Outer React-managed Wrapper */}
       <div
-        ref={containerRef}
+        ref={outerContainerRef}
         role="application"
         aria-label="Google Maps Andhra Pradesh response area"
-        className="relative 'min-h-[380px]' w-full overflow-hidden rounded-xl border border-border bg-[#0f172a] sm:'min-h-[460px] lg:min-h-[520px]'"
+        className="relative min-h-[380px] w-full overflow-hidden rounded-xl border border-border bg-[#0f172a] sm:min-h-[460px] lg:min-h-[520px]"
       >
-        {/* Map Canvas */}
-        <div className="h-full w-full 'min-h-[380px]' sm:'min-h-[460px]' lg:'min-h-[520px]'" />
+        {/* Dedicated Leaf DOM container for Google Maps. React NEVER reconciles inside this element. */}
+        <div
+          ref={mapDivRef}
+          className="absolute inset-0 h-full w-full"
+          style={{ minHeight: "380px" }}
+        />
 
-        {/* Loading Overlay */}
+        {/* Loading Overlay Sibling */}
         {!mapLoaded && !loadError && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0f172a]/90 text-cyan-50 backdrop-blur-sm">
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[#0f172a]/90 text-cyan-50 backdrop-blur-sm pointer-events-none">
             <Compass className="h-8 w-8 animate-spin text-primary" />
             <p className="mt-3 text-sm font-semibold">Connecting to Google Maps Platform…</p>
             <p className="mt-1 text-xs text-muted-foreground">
@@ -524,9 +589,9 @@ function OperationsMapContent({
           </div>
         )}
 
-        {/* Fallback / Error Banner */}
+        {/* Fallback / Error Banner Sibling */}
         {loadError && (
-          <div className="absolute inset-x-3 top-3 rounded-lg border border-accent/50 bg-accent/20 p-4 text-xs text-accent-foreground backdrop-blur-md">
+          <div className="absolute inset-x-3 top-3 z-30 rounded-lg border border-accent/50 bg-accent/20 p-4 text-xs text-accent-foreground backdrop-blur-md">
             <p className="font-semibold flex items-center gap-2">
               <ShieldAlert className="h-4 w-4 text-accent" />
               Google Maps Platform Configuration Required
@@ -539,14 +604,14 @@ function OperationsMapContent({
           </div>
         )}
 
-        {/* Floating Top Left Badge: Scope */}
-        <div className="absolute left-3 top-3 flex items-center gap-2 rounded-lg border border-cyan-100/20 bg-[#0f172a]/85 px-3 py-1.5 font-mono text-[10px] text-cyan-50 backdrop-blur-md shadow-lg">
+        {/* Floating Top Left Badge Sibling */}
+        <div className="absolute left-3 top-3 z-10 flex items-center gap-2 rounded-lg border border-cyan-100/20 bg-[#0f172a]/85 px-3 py-1.5 font-mono text-[10px] text-cyan-50 backdrop-blur-md shadow-lg pointer-events-none">
           <span className="h-2 w-2 rounded-full bg-safe animate-pulse" />
           <span>Andhra Pradesh · Canonical Ops Map</span>
         </div>
 
-        {/* Floating Top Right Controls */}
-        <div className="absolute right-3 top-3 flex flex-col gap-1.5 z-10">
+        {/* Floating Top Right Controls Sibling */}
+        <div className="absolute right-3 top-3 z-10 flex flex-col gap-1.5">
           <button
             type="button"
             title="Locate me & follow"
@@ -580,9 +645,9 @@ function OperationsMapContent({
           </button>
         </div>
 
-        {/* Route Info Badge */}
+        {/* Route Info Badge Sibling */}
         {(calculatedRoute || route) && (
-          <div className="absolute top-12 left-3 max-w-[min(360px,calc(100%-6rem))] rounded-lg border border-primary/40 bg-[#0f172a]/90 p-2.5 text-xs text-cyan-50 shadow-xl backdrop-blur-md z-10">
+          <div className="absolute top-12 left-3 z-10 max-w-[min(360px,calc(100%-6rem))] rounded-lg border border-primary/40 bg-[#0f172a]/90 p-2.5 text-xs text-cyan-50 shadow-xl backdrop-blur-md">
             <p className="font-semibold text-primary flex items-center gap-1.5">
               <Navigation className="h-3.5 w-3.5" />
               {calculatedRoute?.summary || routeLabel || "Real Road Route"}
@@ -608,9 +673,9 @@ function OperationsMapContent({
           </div>
         )}
 
-        {/* Layers Drawer / Popover */}
+        {/* Layers Drawer Sibling */}
         {showLayers && (
-          <div className="absolute bottom-3 left-3 'max-w-[280px]' rounded-lg border border-cyan-100/20 bg-[#0f172a]/95 p-3.5 text-xs text-cyan-50 shadow-2xl backdrop-blur-md z-20">
+          <div className="absolute bottom-3 left-3 z-20 max-w-[280px] rounded-lg border border-cyan-100/20 bg-[#0f172a]/95 p-3.5 text-xs text-cyan-50 shadow-2xl backdrop-blur-md">
             <div className="flex items-center justify-between border-b border-border/60 pb-2">
               <p className="font-semibold">Map Layers</p>
               <button
@@ -649,15 +714,15 @@ function OperationsMapContent({
           </div>
         )}
 
-        {/* Selected Facility / Marker Details Card (Mobile Slide-up / Desktop Card) */}
+        {/* Selected Facility Details Card Sibling */}
         {selected && (
-          <div className="absolute inset-x-3 bottom-3 sm:inset-x-auto sm:right-3 sm:max-w-sm rounded-xl border border-border bg-surface/95 p-4 shadow-2xl backdrop-blur-md z-30 animate-in fade-in slide-in-from-bottom-3 duration-200">
+          <div className="absolute inset-x-3 bottom-3 z-30 rounded-xl border border-border bg-surface/95 p-4 shadow-2xl backdrop-blur-md sm:inset-x-auto sm:right-3 sm:max-w-sm animate-in fade-in slide-in-from-bottom-3 duration-200">
             <button
               type="button"
               className="float-right text-muted-foreground hover:text-foreground text-sm font-bold"
               onClick={() => {
                 setSelected(null);
-                onSelectMarker?.(null);
+                onSelectMarkerRef.current?.(null);
               }}
               aria-label="Close details"
             >
