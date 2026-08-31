@@ -18,7 +18,7 @@ import { useEmergencyLocation } from "@/hooks/useEmergencyLocation";
 import { clusterIncidents } from "@/lib/geo";
 import { localTime, type AlertLevel, type DataQuality } from "@/lib/domain";
 import { getImdAmaravatiAlerts } from "@/lib/weather-service";
-import { calculateGoogleRoutes, type CalculatedRoute } from "@/lib/google-routes";
+import { calculateStaticRoadRoutes, type CalculatedRoute } from "@/lib/static-router";
 import { evaluateRouteHazards } from "@/lib/hazard-routing";
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
@@ -243,11 +243,10 @@ function MapRoute() {
     }
 
     try {
-      const calculated = await calculateGoogleRoutes(
+      const calculated = await calculateStaticRoadRoutes(
         origin,
         { lat: marker.lat, lng: marker.lng },
         "DRIVING",
-        15000,
       );
       if (mapRouteReqIdRef.current !== reqId) return;
 

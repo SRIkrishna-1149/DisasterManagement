@@ -1,5 +1,5 @@
 import { type LatLng, haversineKm } from "./geo";
-import type { CalculatedRoute } from "./google-routes";
+import type { CalculatedRoute } from "./static-router";
 
 export interface HazardZone {
   id: string;

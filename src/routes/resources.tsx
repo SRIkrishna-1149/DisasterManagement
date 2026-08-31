@@ -13,6 +13,7 @@ import {
   Shield,
   Truck,
   AlertTriangle,
+  Compass,
 } from "lucide-react";
 import { OperationsMap, type MapMarker } from "@/components/map-panel";
 import { Button, DataTag, EmptyState, ErrorState, Panel } from "@/components/kit";
@@ -21,15 +22,16 @@ import { AP_CENTER, isInsideAndhraPradesh } from "@/lib/domain";
 import { haversineKm, isValidCoordinate, type LatLng } from "@/lib/geo";
 import { useEmergencyLocation } from "@/hooks/useEmergencyLocation";
 import {
-  searchNearbyGooglePlaces,
-  type NearbyFacility,
+  searchNearbyStaticFacilities,
+  AP_STATIC_FACILITIES,
+  type StaticFacility,
   type FacilityType,
-} from "@/lib/google-places";
+} from "@/lib/static-facilities";
 import {
-  calculateGoogleRoutes,
+  calculateStaticRoadRoutes,
   getExternalNavigationUrl,
   type CalculatedRoute,
-} from "@/lib/google-routes";
+} from "@/lib/static-router";
 import { evaluateRouteHazards } from "@/lib/hazard-routing";
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
@@ -59,7 +61,7 @@ function ResourcesRoute() {
     getCurrentLocation,
   } = useEmergencyLocation();
 
-  // 1. Fetch verified database records from Supabase
+  // 1. Fetch database emergency resource records from Supabase
   const dbResources = useQuery({
     queryKey: ["resources"],
     queryFn: async () => {
@@ -74,32 +76,7 @@ function ResourcesRoute() {
     staleTime: 60_000,
   });
 
-  // 2. Fetch nearby real-world facilities from Google Places when location is ready
-  const placesQuery = useQuery({
-    queryKey: ["google-places-nearby", location?.lat, location?.lng, kind],
-    enabled: Boolean(location && isInsideAndhraPradesh(location.lat, location.lng)),
-    queryFn: async () => {
-      if (!location) return [];
-      const facilityType: FacilityType =
-        kind === "police"
-          ? "police"
-          : kind === "fire_station"
-            ? "fire_station"
-            : kind === "hospital"
-              ? "hospital"
-              : "shelter";
-
-      const places = await searchNearbyGooglePlaces(
-        { lat: location.lat, lng: location.lng },
-        facilityType,
-        25000,
-      );
-      return places;
-    },
-    staleTime: 5 * 60_000,
-  });
-
-  // 3. Fetch active risk assessments for route hazard evaluation
+  // 2. Fetch active risk assessments for route hazard evaluation
   const riskQuery = useQuery({
     queryKey: ["resources-risks"],
     queryFn: async () => {
@@ -114,57 +91,63 @@ function ResourcesRoute() {
     staleTime: 60_000,
   });
 
-  // Combine DB resources & Places facilities
-  const combinedFacilities = useMemo<NearbyFacility[]>(() => {
+  // Combine DB resources & Static Facilities dataset
+  const combinedFacilities = useMemo<StaticFacility[]>(() => {
     const origin = location || AP_CENTER;
-    const dbList: NearbyFacility[] = (dbResources.data ?? [])
+    const dbList: StaticFacility[] = (dbResources.data ?? [])
       .filter((row) => kind === "ALL" || row.resource_type === kind)
       .map((row) => ({
         id: `db-${row.id}`,
         name: row.name,
-        type: row.resource_type === "hospital" ? "hospital" : "shelter",
+        type: (row.resource_type === "hospital" ? "hospital" : "shelter") as FacilityType,
         categoryLabel:
           row.resource_type === "hospital" ? "Verified Hospital" : "Verified Emergency Shelter",
         lat: row.latitude,
         lng: row.longitude,
-        address: row.address,
-        distanceKm: Number(
-          haversineKm(origin, { lat: row.latitude, lng: row.longitude }).toFixed(2),
-        ),
-        travelTimeMinutes: Math.round(
-          haversineKm(origin, { lat: row.latitude, lng: row.longitude }) * 2.2,
-        ),
+        address: row.address || "Andhra Pradesh, India",
+        district: "Andhra Pradesh",
+        city: "Andhra Pradesh",
+        capacity: row.capacity,
+        phone: row.contact_phone || "112",
         isOpen: row.status === "ACTIVE",
-        phone: row.contact_phone,
-        googleMapsUrl: `https://www.google.com/maps/dir/?api=1&destination=${row.latitude},${row.longitude}`,
-        source: "VERIFIED_DATABASE",
-        retrievedAt: row.last_verified_at || row.updated_at,
+        source: "STATIC_DATASET" as const,
+        verifiedAt: row.last_verified_at || row.updated_at,
       }));
 
-    const placesList = (placesQuery.data ?? []).filter(
+    const staticList = searchNearbyStaticFacilities(
+      origin,
+      kind === "ALL" ? "all" : kind,
+      120,
+      30,
+    ).filter(
       (p) =>
         !dbList.some(
           (d) => haversineKm({ lat: d.lat, lng: d.lng }, { lat: p.lat, lng: p.lng }) < 0.2,
         ),
     );
 
-    return [...dbList, ...placesList].sort((a, b) => a.distanceKm - b.distanceKm);
-  }, [dbResources.data, placesQuery.data, location, kind]);
+    const merged = [...dbList, ...staticList];
+    return merged.sort(
+      (a, b) =>
+        haversineKm(origin, { lat: a.lat, lng: a.lng }) -
+        haversineKm(origin, { lat: b.lat, lng: b.lng }),
+    );
+  }, [dbResources.data, location, kind]);
 
   const selectedFacility = useMemo(
     () => combinedFacilities.find((f) => f.id === selectedFacilityId) ?? null,
     [combinedFacilities, selectedFacilityId],
   );
 
-  // Compute real road routes with state machine, generation token, and live GPS acquisition
+  // Compute static road routes locally with state machine and GPS acquisition
   const handleRouteHere = useCallback(
-    async (facility: NearbyFacility) => {
+    async (facility: StaticFacility) => {
       setSelectedFacilityId(facility.id);
       setSelectedRouteIndex(0);
       setActiveRoutes([]);
       setRouteError(null);
 
-      // Validate destination
+      // Validate destination coordinates
       if (!isValidCoordinate(facility.lat, facility.lng)) {
         setRouteError("Selected destination contains invalid geographic coordinates.");
         setRoutingState("error");
@@ -190,41 +173,32 @@ function ResourcesRoute() {
           // Request fresh high-accuracy device location
           setRoutingState("requesting-location");
           try {
-            const freshLoc = await getCurrentLocation(12000);
+            const freshLoc = await getCurrentLocation(8000);
             if (activeRequestIdRef.current !== reqId) return; // Stale request
             originCoord = { lat: freshLoc.lat, lng: freshLoc.lng };
-          } catch (locErr) {
+          } catch {
             if (activeRequestIdRef.current !== reqId) return;
-            setRoutingState("error");
-            setRouteError(
-              locErr instanceof Error
-                ? locErr.message
-                : "Unable to acquire current device location for route origin. Please ensure location permission is allowed.",
-            );
-            return;
+            // Fall back to default Andhra Pradesh center if GPS permission is not granted
+            originCoord = AP_CENTER;
           }
         }
 
         if (!originCoord) {
-          if (activeRequestIdRef.current !== reqId) return;
-          setRoutingState("error");
-          setRouteError("Unable to determine current location origin for routing.");
-          return;
+          originCoord = AP_CENTER;
         }
 
         setRoutingState("calculating-route");
-        const routes = await calculateGoogleRoutes(
+        const routes = await calculateStaticRoadRoutes(
           originCoord,
           { lat: facility.lat, lng: facility.lng },
           "DRIVING",
-          15000,
         );
 
         if (activeRequestIdRef.current !== reqId) return; // Stale response protection
 
         if (!routes || routes.length === 0) {
           setRoutingState("error");
-          setRouteError("No road routes returned by Google Maps for this destination.");
+          setRouteError("No road routes found in the Andhra Pradesh static road network.");
           return;
         }
 
@@ -253,31 +227,29 @@ function ResourcesRoute() {
       } catch (err) {
         if (activeRequestIdRef.current !== reqId) return;
         setRoutingState("error");
-        setRouteError(
-          err instanceof Error
-            ? err.message
-            : "Road route calculation failed. Google Directions may be temporarily unavailable.",
-        );
+        setRouteError(err instanceof Error ? err.message : "Static road route calculation failed.");
       }
     },
     [location, getCurrentLocation, riskQuery.data],
   );
 
-  const markers: MapMarker[] = useMemo(
-    () =>
-      combinedFacilities.map((f) => ({
+  const markers: MapMarker[] = useMemo(() => {
+    const origin = location || AP_CENTER;
+    return combinedFacilities.map((f) => {
+      const dist = haversineKm(origin, { lat: f.lat, lng: f.lng });
+      return {
         id: f.id,
         kind: "resource" as const,
         label: f.name,
-        detail: `${f.categoryLabel} · ${f.distanceKm} km away`,
+        detail: `${f.categoryLabel} · ${dist.toFixed(1)} km away`,
         lat: f.lat,
         lng: f.lng,
         address: f.address,
         phone: f.phone,
-        quality: f.source === "VERIFIED_DATABASE" ? "CACHED" : "LIVE",
-      })),
-    [combinedFacilities],
-  );
+        quality: "CACHED" as const,
+      };
+    });
+  }, [combinedFacilities, location]);
 
   const activeRoute = activeRoutes[selectedRouteIndex] ?? null;
   const isRoutingBusy =
@@ -287,7 +259,7 @@ function ResourcesRoute() {
     <PageFrame
       eyebrow="Community / find help"
       title="Shelters, hospitals & stations"
-      description="Real-time facility discovery around your location with actual road directions and disaster-aware route evaluations."
+      description="Static emergency facility discovery across Andhra Pradesh with local road network routing and disaster hazard assessment."
       actions={
         <Link to="/map">
           <Button>
@@ -331,7 +303,7 @@ function ResourcesRoute() {
         <div>
           {dbResources.isError && (
             <ErrorState
-              message="Resource database is unavailable. Nearby Google Places information may still be loaded."
+              message="Online resource database is unreachable. Static Andhra Pradesh emergency facility dataset is loaded."
               onRetry={() => void dbResources.refetch()}
             />
           )}
@@ -341,10 +313,10 @@ function ResourcesRoute() {
             <div className="mb-4 flex flex-col gap-3 rounded-lg border border-primary/30 bg-primary/5 p-3.5 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-xs font-semibold text-primary">
-                  Enable device location for nearby accuracy
+                  Enable device location for nearest facility sorting
                 </p>
                 <p className="mt-0.5 text-[11px] text-muted-foreground">
-                  Sorts facilities by true distance and computes routes from where you are.
+                  Sorts facilities by exact road distance from your coordinates.
                 </p>
               </div>
               <Button size="sm" onClick={requestLocation} disabled={locStatus === "locating"}>
@@ -354,26 +326,26 @@ function ResourcesRoute() {
             </div>
           )}
 
-          {dbResources.isLoading && combinedFacilities.length === 0 ? (
-            <Panel>
-              <p className="flex items-center gap-2 text-sm text-muted-foreground">
-                <RefreshCw className="h-4 w-4 animate-spin" />
-                Searching for emergency facilities…
-              </p>
-            </Panel>
-          ) : combinedFacilities.length === 0 ? (
+          {combinedFacilities.length === 0 ? (
             <EmptyState message="No emergency facilities found matching this filter in Andhra Pradesh." />
           ) : (
             <div className="space-y-3">
-              {combinedFacilities.map((facility) => (
-                <FacilityCard
-                  key={facility.id}
-                  facility={facility}
-                  isSelected={selectedFacility?.id === facility.id}
-                  isRoutingBusy={selectedFacility?.id === facility.id && isRoutingBusy}
-                  onSelect={() => handleRouteHere(facility)}
-                />
-              ))}
+              {combinedFacilities.map((facility) => {
+                const origin = location || AP_CENTER;
+                const distanceKm = Number(
+                  haversineKm(origin, { lat: facility.lat, lng: facility.lng }).toFixed(1),
+                );
+                return (
+                  <FacilityCard
+                    key={facility.id}
+                    facility={facility}
+                    distanceKm={distanceKm}
+                    isSelected={selectedFacility?.id === facility.id}
+                    isRoutingBusy={selectedFacility?.id === facility.id && isRoutingBusy}
+                    onSelect={() => handleRouteHere(facility)}
+                  />
+                );
+              })}
             </div>
           )}
         </div>
@@ -402,7 +374,7 @@ function ResourcesRoute() {
 
           {/* Route Details Panel */}
           {selectedFacility && (
-            <Panel title="Road Route & Safety Assessment">
+            <Panel title="Static Road Route & Safety Assessment">
               {routingState === "requesting-location" ? (
                 <p className="flex items-center gap-2 text-sm text-muted-foreground py-2">
                   <Crosshair className="h-4 w-4 animate-spin text-primary" />
@@ -411,7 +383,7 @@ function ResourcesRoute() {
               ) : routingState === "calculating-route" ? (
                 <p className="flex items-center gap-2 text-sm text-muted-foreground py-2">
                   <RefreshCw className="h-4 w-4 animate-spin text-primary" />
-                  Calculating real road directions via Google Maps…
+                  Calculating static road route…
                 </p>
               ) : routingState === "error" || routeError ? (
                 <div className="rounded-lg border border-accent/40 bg-accent/10 p-3.5 text-xs text-accent space-y-2">
@@ -423,16 +395,8 @@ function ResourcesRoute() {
                       onClick={() => handleRouteHere(selectedFacility)}
                     >
                       <RefreshCw className="h-3 w-3" />
-                      Retry route calculation
+                      Retry local route calculation
                     </Button>
-                    <a
-                      href={selectedFacility.googleMapsUrl || "#"}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex min-h-8 items-center gap-1 font-bold underline text-accent hover:brightness-125"
-                    >
-                      Open directly in Google Maps ↗
-                    </a>
                   </div>
                 </div>
               ) : activeRoute ? (
@@ -444,29 +408,9 @@ function ResourcesRoute() {
                         {activeRoute.summary}
                       </p>
                       <p className="text-xs text-muted-foreground mt-0.5">
-                        {activeRoute.distanceText} · {activeRoute.durationText} road travel
+                        {activeRoute.distanceText} · {activeRoute.durationText} estimated travel
                       </p>
                     </div>
-
-                    {/* Route Alternatives */}
-                    {activeRoutes.length > 1 && (
-                      <div className="flex gap-1.5">
-                        {activeRoutes.map((r, idx) => (
-                          <button
-                            key={r.id}
-                            type="button"
-                            onClick={() => setSelectedRouteIndex(idx)}
-                            className={`rounded px-2.5 py-1 text-xs font-semibold ${
-                              selectedRouteIndex === idx
-                                ? "bg-primary text-primary-foreground"
-                                : "border border-border bg-surface hover:bg-surface-2 text-muted-foreground"
-                            }`}
-                          >
-                            Route {idx + 1}
-                          </button>
-                        ))}
-                      </div>
-                    )}
                   </div>
 
                   {/* Hazard Assessment Banner */}
@@ -489,31 +433,26 @@ function ResourcesRoute() {
                   {/* Step Guidance Snippet */}
                   {activeRoute.steps.length > 0 && (
                     <div className="border-t border-border/60 pt-2 text-xs text-muted-foreground">
-                      <p className="font-semibold text-foreground mb-1">Key navigation turn:</p>
-                      <p className="italic">"{activeRoute.steps[0]?.instruction}"</p>
+                      <p className="font-semibold text-foreground mb-1">Key highway segments:</p>
+                      <div className="space-y-1 mt-1">
+                        {activeRoute.steps.slice(0, 4).map((step, sIdx) => (
+                          <p key={sIdx} className="flex items-center justify-between">
+                            <span>• {step.instruction}</span>
+                            <span className="font-mono text-[10px]">{step.distanceText}</span>
+                          </p>
+                        ))}
+                      </div>
                     </div>
                   )}
 
                   {/* Actions */}
                   <div className="flex flex-wrap gap-2 pt-2">
-                    <a
-                      href={getExternalNavigationUrl(
-                        { lat: selectedFacility.lat, lng: selectedFacility.lng },
-                        location ? { lat: location.lat, lng: location.lng } : undefined,
-                      )}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex min-h-9 items-center gap-1.5 rounded-md bg-primary px-3 text-xs font-bold text-primary-foreground hover:brightness-110"
-                    >
-                      <Navigation className="h-3.5 w-3.5" />
-                      Navigate in Google Maps ↗
-                    </a>
                     {selectedFacility.phone && (
                       <a
                         href={`tel:${selectedFacility.phone}`}
                         className="inline-flex min-h-9 items-center gap-1.5 rounded-md border border-border px-3 text-xs font-semibold hover:bg-surface-2"
                       >
-                        <Phone className="h-3.5 w-3.5" />
+                        <Phone className="h-3.5 w-3.5 text-emerald-400" />
                         Call {selectedFacility.phone}
                       </a>
                     )}
@@ -530,97 +469,87 @@ function ResourcesRoute() {
 
 function FacilityCard({
   facility,
+  distanceKm,
   isSelected,
   isRoutingBusy,
   onSelect,
 }: {
-  facility: NearbyFacility;
+  facility: StaticFacility;
+  distanceKm: number;
   isSelected: boolean;
-  isRoutingBusy?: boolean;
+  isRoutingBusy: boolean;
   onSelect: () => void;
 }) {
-  const isHospital = facility.type === "hospital";
-  const isPolice = facility.type === "police";
-  const isFire = facility.type === "fire_station";
+  const icon =
+    facility.type === "hospital" ? (
+      <Hospital className="h-5 w-5 text-emerald-400" />
+    ) : facility.type === "police" ? (
+      <Shield className="h-5 w-5 text-blue-400" />
+    ) : facility.type === "fire_station" ? (
+      <Truck className="h-5 w-5 text-amber-400" />
+    ) : (
+      <Building2 className="h-5 w-5 text-sky-400" />
+    );
 
   return (
-    <article
-      className={`panel p-4 transition-all duration-150 ${
-        isSelected ? "ring-2 ring-primary border-primary bg-primary/5" : "hover:border-primary/40"
+    <div
+      onClick={onSelect}
+      className={`group relative cursor-pointer rounded-xl border p-4 transition-all ${
+        isSelected
+          ? "border-primary bg-primary/10 shadow-md ring-1 ring-primary/40"
+          : "border-border bg-surface hover:border-primary/50 hover:bg-surface-2"
       }`}
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="flex gap-3">
-          <div className="rounded-lg bg-primary/10 p-2 text-primary">
-            {isHospital ? (
-              <Hospital className="h-5 w-5" />
-            ) : isPolice ? (
-              <Shield className="h-5 w-5" />
-            ) : isFire ? (
-              <Truck className="h-5 w-5" />
-            ) : (
-              <Building2 className="h-5 w-5" />
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 rounded-lg border border-border bg-surface-2 p-2">{icon}</div>
+          <div>
+            <h3 className="text-sm font-bold text-foreground group-hover:text-primary transition-colors">
+              {facility.name}
+            </h3>
+            <p className="mt-0.5 text-xs text-muted-foreground flex items-center gap-2">
+              <span>{facility.categoryLabel}</span>
+              <span>•</span>
+              <span className="font-semibold text-foreground">{facility.district}</span>
+            </p>
+            {facility.address && (
+              <p className="mt-1 text-[11px] text-muted-foreground/80 line-clamp-1">
+                {facility.address}
+              </p>
             )}
           </div>
-          <div>
-            <h2 className="font-semibold text-foreground text-sm sm:text-base">{facility.name}</h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">{facility.categoryLabel}</p>
-          </div>
         </div>
-        <span className="rounded-md border border-border bg-surface px-2 py-1 font-mono text-[10px] font-bold text-primary">
-          {facility.distanceKm} km
-        </span>
+
+        <div className="text-right shrink-0">
+          <span className="font-mono text-sm font-bold text-primary">{distanceKm} km</span>
+          <p className="text-[10px] text-muted-foreground">road access</p>
+        </div>
       </div>
 
-      <div className="mt-3 grid gap-1.5 text-xs text-muted-foreground">
-        {facility.address && (
-          <p className="flex items-center gap-1">
-            <MapPinned className="h-3.5 w-3.5 shrink-0 text-primary" />
-            {facility.address}
-          </p>
-        )}
-        <p className="text-[11px]">
-          Source:{" "}
-          <span className="font-semibold text-foreground">
-            {facility.source === "VERIFIED_DATABASE" ? "Official Database" : "Google Places"}
-          </span>
-          {" · "}
-          {facility.travelTimeMinutes
-            ? `~${facility.travelTimeMinutes} min travel`
-            : "Travel time available"}
-        </p>
-      </div>
-
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3">
-        <DataTag
-          quality={facility.source === "VERIFIED_DATABASE" ? "CACHED" : "LIVE"}
-          at={facility.retrievedAt}
-        />
-        <div className="flex gap-2">
+      <div className="mt-3.5 flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2.5">
+        <div className="flex items-center gap-2">
+          <DataTag quality="CACHED" />
           {facility.phone && (
-            <a
-              href={`tel:${facility.phone}`}
-              className="inline-flex min-h-8 items-center gap-1 rounded-md border border-border px-2 text-xs font-semibold hover:bg-surface-2"
-            >
-              <Phone className="h-3 w-3" />
-              Call
-            </a>
+            <span className="font-mono text-[11px] text-muted-foreground flex items-center gap-1">
+              <Phone className="h-3 w-3 text-emerald-400" /> {facility.phone}
+            </span>
           )}
-          <button
-            type="button"
-            onClick={onSelect}
-            disabled={isRoutingBusy}
-            className={`inline-flex min-h-8 items-center gap-1.5 rounded-md px-3 text-xs font-bold ${
-              isSelected
-                ? "bg-primary text-primary-foreground"
-                : "border border-primary/40 bg-primary/10 text-primary hover:bg-primary/20"
-            } disabled:opacity-60`}
-          >
-            <RouteIcon className="h-3 w-3" />
-            {isRoutingBusy ? "Routing…" : isSelected ? "Selected" : "Route here"}
-          </button>
         </div>
+
+        <Button size="sm" variant={isSelected ? "primary" : "outline"} disabled={isRoutingBusy}>
+          {isRoutingBusy ? (
+            <>
+              <RefreshCw className="h-3.5 w-3.5 animate-spin" />
+              Routing…
+            </>
+          ) : (
+            <>
+              <Navigation className="h-3.5 w-3.5" />
+              Route here
+            </>
+          )}
+        </Button>
       </div>
-    </article>
+    </div>
   );
 }

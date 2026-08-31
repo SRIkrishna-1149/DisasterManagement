@@ -236,7 +236,7 @@ function HomeRoute() {
             value={activeSos.length}
             hint={user ? "Track response progress" : "Sign in to track your requests"}
           />
-          <Stat label="Map Engine" value="Google Maps" hint="Live road routes & Places" />
+          <Stat label="Map Engine" value="Static AP Map" hint="Local road routes & facilities" />
         </section>
 
         {/* Main Map & Live Feeds Grid */}

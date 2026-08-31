@@ -29,10 +29,10 @@ import {
   type SosStatus,
 } from "@/lib/domain";
 import {
-  calculateGoogleRoutes,
+  calculateStaticRoadRoutes,
   getExternalNavigationUrl,
   type CalculatedRoute,
-} from "@/lib/google-routes";
+} from "@/lib/static-router";
 import { supabase } from "@/integrations/supabase/client";
 import type { Tables } from "@/integrations/supabase/types";
 
@@ -146,16 +146,16 @@ function RescueContent() {
     }
 
     let active = true;
-    calculateGoogleRoutes(
+    calculateStaticRoadRoutes(
       { lat: rescuerLoc.lat, lng: rescuerLoc.lng },
       { lat: selected.latitude, lng: selected.longitude },
     )
-      .then((routes) => {
+      .then((routes: CalculatedRoute[]) => {
         if (active && routes.length > 0) {
           setIncidentRoute(routes[0] ?? null);
         }
       })
-      .catch((err) => {
+      .catch((err: unknown) => {
         console.warn("Rescuer to incident route error:", err);
       });
 
