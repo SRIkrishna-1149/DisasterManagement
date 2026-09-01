@@ -247,7 +247,7 @@ function HomeRoute() {
         <div className="grid gap-5 xl:grid-cols-[1.4fr_1fr]">
           <OperationsMap
             markers={markers}
-            title="Andhra Pradesh Overview Map"
+            title="Satellite Operations Map"
             userLocation={userLoc ? { lat: userLoc.lat, lng: userLoc.lng } : null}
             userAccuracyM={userLoc?.accuracyM ?? null}
           />

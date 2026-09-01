@@ -2,7 +2,7 @@ import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useRef, useState } from "react";
 import { AlertTriangle, Filter, MapPinned, Radio, ShieldAlert, Navigation } from "lucide-react";
-import { OperationsMap, type MapMarker } from "@/components/map-panel";
+import { MapPanel, type MapMarker } from "@/components/map-panel";
 import {
   Button,
   DataTag,
@@ -276,9 +276,9 @@ function MapRoute() {
 
   return (
     <PageFrame
-      eyebrow="Situational awareness / map"
-      title="Live response map"
-      description="A canonical Google Maps viewport of public resources, risk assessments, approved alert zones, and—when authorised—mission locations. Real road routes and live device GPS."
+      eyebrow="Situational Awareness / Map"
+      title="Satellite Operations Map"
+      description="India-wide emergency operations map of verified public resources, disaster hazard zones, warnings, static road network routing, and device GPS."
       actions={
         <div className="flex flex-wrap gap-2">
           {activeRoute && (
@@ -306,17 +306,16 @@ function MapRoute() {
         <Stat
           label={isOperator ? "SOS clusters" : "IMD Warnings"}
           value={isOperator ? incidentGroups.length : imdAlerts.length}
-          hint={isOperator ? "90-minute / 500 m grouping" : "IMD Amaravati active notices"}
+          hint={isOperator ? "90-minute / 500 m grouping" : "IMD active notices"}
         />
       </section>
 
-      <OperationsMap
+      <MapPanel
         markers={markers}
         className="mt-5"
-        title="Response area · Canonical Operations Map"
         userLocation={userLoc ? { lat: userLoc.lat, lng: userLoc.lng } : null}
-        userAccuracyM={userLoc?.accuracyM ?? null}
-        calculatedRoute={activeRoute}
+        accuracyM={userLoc?.accuracyM ?? null}
+        activeRoute={activeRoute}
         onRouteToMarker={handleRouteToMarker}
       />
 

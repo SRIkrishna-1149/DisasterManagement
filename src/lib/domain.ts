@@ -231,10 +231,56 @@ export const LOCATION_CONFIDENCE: Record<LocationSource, { label: string; confid
 };
 
 /**
- * Operating region: Andhra Pradesh, India. This broad operating box is used as
- * a safe demo-data guard; it is not presented as an official legal boundary.
- * All demo geography must stay inside the configured operating bounds and is
- * labelled as demo data when it is not sourced from a connected service.
+ * Geographic extent for India. Covers the entire territory of the Republic of India
+ * including Jammu & Kashmir, Ladakh, Kanyakumari, Gujarat, Arunachal Pradesh,
+ * Andaman & Nicobar Islands, and Lakshadweep.
+ */
+export const INDIA_BOUNDS = {
+  minLat: 6.5,
+  maxLat: 37.5,
+  minLng: 68.0,
+  maxLng: 97.5,
+} as const;
+
+/** Geographic center of India. */
+export const INDIA_CENTER = { lat: 20.5937, lng: 78.9629 } as const;
+
+/** Default nationwide viewport for operations map. */
+export const INDIA_DEFAULT_VIEWPORT = {
+  minLat: 8.0,
+  maxLat: 35.5,
+  minLng: 68.5,
+  maxLng: 96.5,
+} as const;
+
+export function isInsideIndia(lat: number, lng: number): boolean {
+  return (
+    lat >= INDIA_BOUNDS.minLat &&
+    lat <= INDIA_BOUNDS.maxLat &&
+    lng >= INDIA_BOUNDS.minLng &&
+    lng <= INDIA_BOUNDS.maxLng
+  );
+}
+
+/**
+ * Formats geographic distance in emergency context:
+ * - Distances under 1 km: displayed in meters (e.g. "420 m", "850 m")
+ * - Distances 1 km and above: displayed in kilometers (e.g. "1.2 km", "4.8 km")
+ */
+export function formatEmergencyDistance(distanceKm: number): string {
+  if (!Number.isFinite(distanceKm) || distanceKm < 0) return "—";
+  if (distanceKm < 1.0) {
+    const meters = Math.round(distanceKm * 1000);
+    return `${meters} m`;
+  }
+  if (distanceKm < 10) {
+    return `${distanceKm.toFixed(1)} km`;
+  }
+  return `${Math.round(distanceKm)} km`;
+}
+
+/**
+ * Operating region: Andhra Pradesh, India.
  */
 export const AP_BOUNDS = {
   minLat: 12.62,
@@ -243,10 +289,10 @@ export const AP_BOUNDS = {
   maxLng: 84.8,
 } as const;
 
-/** Default operational focus — Krishna district / Vijayawada. */
+/** Operational focus — Krishna district / Vijayawada. */
 export const AP_CENTER = { lat: 16.5062, lng: 80.648 } as const;
 
-/** Default viewport for the operations map (Krishna–Guntur corridor). */
+/** Viewport for the Andhra Pradesh corridor. */
 export const AP_DEFAULT_VIEWPORT = {
   minLat: 16.18,
   maxLat: 16.72,

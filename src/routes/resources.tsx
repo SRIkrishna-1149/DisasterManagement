@@ -13,17 +13,20 @@ import {
   Shield,
   Truck,
   AlertTriangle,
-  Compass,
+  Flame,
+  LifeBuoy,
+  Info,
+  CheckCircle2,
 } from "lucide-react";
-import { OperationsMap, type MapMarker } from "@/components/map-panel";
+import { MapPanel, type MapMarker } from "@/components/map-panel";
 import { Button, DataTag, EmptyState, ErrorState, Panel } from "@/components/kit";
 import { PageFrame } from "@/components/portal";
-import { AP_CENTER, isInsideAndhraPradesh } from "@/lib/domain";
+import { INDIA_CENTER, isInsideIndia, formatEmergencyDistance } from "@/lib/domain";
 import { haversineKm, isValidCoordinate, type LatLng } from "@/lib/geo";
 import { useEmergencyLocation } from "@/hooks/useEmergencyLocation";
 import {
   searchNearbyStaticFacilities,
-  AP_STATIC_FACILITIES,
+  INDIAN_STATIC_FACILITIES,
   type StaticFacility,
   type FacilityType,
 } from "@/lib/static-facilities";
@@ -44,9 +47,8 @@ export type RoutingState =
 export const Route = createFileRoute("/resources")({ component: ResourcesRoute });
 
 function ResourcesRoute() {
-  const [kind, setKind] = useState<"ALL" | "shelter" | "hospital" | "police" | "fire_station">(
-    "ALL",
-  );
+  const [kind, setKind] = useState<"ALL" | FacilityType>("ALL");
+  const [searchRadiusKm, setSearchRadiusKm] = useState<number>(25);
   const [selectedFacilityId, setSelectedFacilityId] = useState<string | null>(null);
   const [activeRoutes, setActiveRoutes] = useState<CalculatedRoute[]>([]);
   const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
@@ -91,9 +93,9 @@ function ResourcesRoute() {
     staleTime: 60_000,
   });
 
-  // Combine DB resources & Static Facilities dataset
+  // Combine DB resources & Static Facilities dataset sorted locally by GPS distance
   const combinedFacilities = useMemo<StaticFacility[]>(() => {
-    const origin = location || AP_CENTER;
+    const origin = location || INDIA_CENTER;
     const dbList: StaticFacility[] = (dbResources.data ?? [])
       .filter((row) => kind === "ALL" || row.resource_type === kind)
       .map((row) => ({
@@ -101,24 +103,28 @@ function ResourcesRoute() {
         name: row.name,
         type: (row.resource_type === "hospital" ? "hospital" : "shelter") as FacilityType,
         categoryLabel:
-          row.resource_type === "hospital" ? "Verified Hospital" : "Verified Emergency Shelter",
+          row.resource_type === "hospital"
+            ? "Hospital & Trauma Center"
+            : "Designated Relief Shelter",
         lat: row.latitude,
         lng: row.longitude,
         address: row.address || "Andhra Pradesh, India",
         district: "Andhra Pradesh",
         city: "Andhra Pradesh",
+        state: "Andhra Pradesh",
         capacity: row.capacity,
         phone: row.contact_phone || "112",
         isOpen: row.status === "ACTIVE",
-        source: "STATIC_DATASET" as const,
-        verifiedAt: row.last_verified_at || row.updated_at,
+        source: "State Emergency Resource Database",
+        verified: true,
+        lastUpdated: row.last_verified_at || row.updated_at,
       }));
 
     const staticList = searchNearbyStaticFacilities(
       origin,
       kind === "ALL" ? "all" : kind,
-      120,
-      30,
+      searchRadiusKm,
+      40,
     ).filter(
       (p) =>
         !dbList.some(
@@ -132,7 +138,7 @@ function ResourcesRoute() {
         haversineKm(origin, { lat: a.lat, lng: a.lng }) -
         haversineKm(origin, { lat: b.lat, lng: b.lng }),
     );
-  }, [dbResources.data, location, kind]);
+  }, [dbResources.data, location, kind, searchRadiusKm]);
 
   const selectedFacility = useMemo(
     () => combinedFacilities.find((f) => f.id === selectedFacilityId) ?? null,
@@ -153,8 +159,8 @@ function ResourcesRoute() {
         setRoutingState("error");
         return;
       }
-      if (!isInsideAndhraPradesh(facility.lat, facility.lng)) {
-        setRouteError("Selected facility is located outside the Andhra Pradesh operating area.");
+      if (!isInsideIndia(facility.lat, facility.lng)) {
+        setRouteError("Selected facility is located outside the India operations area.");
         setRoutingState("error");
         return;
       }
@@ -166,7 +172,7 @@ function ResourcesRoute() {
         if (
           location &&
           isValidCoordinate(location.lat, location.lng) &&
-          isInsideAndhraPradesh(location.lat, location.lng)
+          isInsideIndia(location.lat, location.lng)
         ) {
           originCoord = { lat: location.lat, lng: location.lng };
         } else {
@@ -178,13 +184,12 @@ function ResourcesRoute() {
             originCoord = { lat: freshLoc.lat, lng: freshLoc.lng };
           } catch {
             if (activeRequestIdRef.current !== reqId) return;
-            // Fall back to default Andhra Pradesh center if GPS permission is not granted
-            originCoord = AP_CENTER;
+            originCoord = INDIA_CENTER;
           }
         }
 
         if (!originCoord) {
-          originCoord = AP_CENTER;
+          originCoord = INDIA_CENTER;
         }
 
         setRoutingState("calculating-route");
@@ -198,7 +203,7 @@ function ResourcesRoute() {
 
         if (!routes || routes.length === 0) {
           setRoutingState("error");
-          setRouteError("No road routes found in the Andhra Pradesh static road network.");
+          setRouteError("No road routes found in the static road network for this connection.");
           return;
         }
 
@@ -234,14 +239,14 @@ function ResourcesRoute() {
   );
 
   const markers: MapMarker[] = useMemo(() => {
-    const origin = location || AP_CENTER;
+    const origin = location || INDIA_CENTER;
     return combinedFacilities.map((f) => {
       const dist = haversineKm(origin, { lat: f.lat, lng: f.lng });
       return {
         id: f.id,
         kind: "resource" as const,
         label: f.name,
-        detail: `${f.categoryLabel} · ${dist.toFixed(1)} km away`,
+        detail: `${f.categoryLabel} · ${formatEmergencyDistance(dist)} away`,
         lat: f.lat,
         lng: f.lng,
         address: f.address,
@@ -257,89 +262,130 @@ function ResourcesRoute() {
 
   return (
     <PageFrame
-      eyebrow="Community / find help"
-      title="Shelters, hospitals & stations"
-      description="Static emergency facility discovery across Andhra Pradesh with local road network routing and disaster hazard assessment."
+      eyebrow="Emergency Resources"
+      title="Shelters, Hospitals & Rescue Stations"
+      description="Localized emergency facility discovery with static road routing, proximity sorting in meters, and hazard assessment."
       actions={
         <Link to="/map">
           <Button>
             <MapPinned className="h-4 w-4" />
-            Full map view
+            Full Map View
           </Button>
         </Link>
       }
     >
-      {/* Category Filter Pills */}
-      <div className="flex flex-wrap items-center gap-2">
-        {[
-          ["ALL", "All resources"],
-          ["shelter", "Shelters"],
-          ["hospital", "Hospitals"],
-          ["police", "Police stations"],
-          ["fire_station", "Fire stations"],
-        ].map(([value, label]) => (
-          <button
-            key={value}
-            onClick={() => {
-              setKind(value as typeof kind);
-              setSelectedFacilityId(null);
-              setActiveRoutes([]);
-              setRoutingState("idle");
-              setRouteError(null);
-            }}
-            className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${
-              kind === value
-                ? "border-primary bg-primary/15 text-primary"
-                : "border-border text-muted-foreground hover:bg-surface-2"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
+      {/* Filter and Radius Controls */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        {/* Category Filter Pills */}
+        <div className="flex flex-wrap items-center gap-2">
+          {[
+            ["ALL", "All Facilities"],
+            ["shelter", "Shelters"],
+            ["hospital", "Hospitals"],
+            ["police", "Police Stations"],
+            ["fire_station", "Fire Stations"],
+            ["rescue_station", "Rescue Bases"],
+            ["emergency_facility", "Evacuation Points"],
+          ].map(([value, label]) => (
+            <button
+              key={value}
+              onClick={() => {
+                setKind(value as typeof kind);
+                setSelectedFacilityId(null);
+                setActiveRoutes([]);
+                setRoutingState("idle");
+                setRouteError(null);
+              }}
+              className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                kind === value
+                  ? "border-cyan-500 bg-cyan-500/15 text-cyan-300"
+                  : "border-slate-800 text-slate-400 hover:bg-slate-900 hover:text-slate-200"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Search Radius Selection */}
+        <div className="flex items-center gap-1.5 text-xs text-slate-400">
+          <span>Radius:</span>
+          {[
+            [10, "10 km"],
+            [25, "25 km"],
+            [75, "75 km"],
+            [300, "All Region"],
+          ].map(([rad, radLabel]) => (
+            <button
+              key={rad}
+              onClick={() => setSearchRadiusKm(Number(rad))}
+              className={`rounded px-2 py-0.5 text-[11px] font-medium transition ${
+                searchRadiusKm === rad
+                  ? "bg-cyan-500/20 text-cyan-300 font-bold"
+                  : "bg-slate-900 text-slate-400 hover:text-white"
+              }`}
+            >
+              {radLabel}
+            </button>
+          ))}
+        </div>
       </div>
 
-      <div className="grid gap-5 xl:grid-cols-[1fr_1.25fr]">
+      <div className="grid gap-5 xl:grid-cols-[1fr_1.35fr]">
         {/* Left Column: Facility List */}
         <div>
           {dbResources.isError && (
             <ErrorState
-              message="Online resource database is unreachable. Static Andhra Pradesh emergency facility dataset is loaded."
+              message="Online resource database is unreachable. Verified static emergency facilities dataset is loaded."
               onRetry={() => void dbResources.refetch()}
             />
           )}
 
           {/* Location prompt banner if GPS not active */}
           {!location && (
-            <div className="mb-4 flex flex-col gap-3 rounded-lg border border-primary/30 bg-primary/5 p-3.5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="mb-4 flex flex-col gap-3 rounded-xl border border-cyan-500/30 bg-cyan-500/5 p-3.5 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <p className="text-xs font-semibold text-primary">
-                  Enable device location for nearest facility sorting
+                <p className="text-xs font-semibold text-cyan-300">
+                  Enable GPS location for localized proximity sorting
                 </p>
-                <p className="mt-0.5 text-[11px] text-muted-foreground">
-                  Sorts facilities by exact road distance from your coordinates.
+                <p className="mt-0.5 text-[11px] text-slate-400">
+                  Ranks nearest emergency shelters, hospitals, and stations by road distance.
                 </p>
               </div>
               <Button size="sm" onClick={requestLocation} disabled={locStatus === "locating"}>
                 <Crosshair className="h-4 w-4" />
-                {locStatus === "locating" ? "Locating…" : "Use my GPS"}
+                {locStatus === "locating" ? "Locating…" : "Use My GPS"}
               </Button>
             </div>
           )}
 
           {combinedFacilities.length === 0 ? (
-            <EmptyState message="No emergency facilities found matching this filter in Andhra Pradesh." />
+            <div className="rounded-xl border border-slate-800 bg-slate-950 p-6 text-center text-slate-400">
+              <Building2 className="mx-auto mb-2 h-8 w-8 text-slate-500" />
+              <p className="text-sm font-semibold text-slate-200">
+                No verified emergency facility found within {searchRadiusKm} km.
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                Try expanding the search radius or selecting a different category.
+              </p>
+              <button
+                type="button"
+                onClick={() => setSearchRadiusKm(75)}
+                className="mt-3 rounded-lg border border-cyan-500/40 bg-cyan-500/10 px-3 py-1.5 text-xs font-semibold text-cyan-300 hover:bg-cyan-500/20"
+              >
+                Expand Search Radius to 75 km
+              </button>
+            </div>
           ) : (
             <div className="space-y-3">
               {combinedFacilities.map((facility) => {
-                const origin = location || AP_CENTER;
-                const distanceKm = Number(
-                  haversineKm(origin, { lat: facility.lat, lng: facility.lng }).toFixed(1),
-                );
+                const origin = location || INDIA_CENTER;
+                const distKm = haversineKm(origin, { lat: facility.lat, lng: facility.lng });
                 return (
                   <FacilityCard
                     key={facility.id}
                     facility={facility}
-                    distanceKm={distanceKm}
+                    distanceKm={distKm}
                     isSelected={selectedFacility?.id === facility.id}
                     isRoutingBusy={selectedFacility?.id === facility.id && isRoutingBusy}
                     onSelect={() => handleRouteHere(facility)}
@@ -352,14 +398,12 @@ function ResourcesRoute() {
 
         {/* Right Column: Interactive Map & Route Preview */}
         <div className="space-y-4">
-          <OperationsMap
+          <MapPanel
             markers={markers}
-            calculatedRoute={activeRoute}
+            activeRoute={activeRoute}
             userLocation={location ? { lat: location.lat, lng: location.lng } : null}
-            userAccuracyM={location?.accuracyM ?? null}
-            title={
-              selectedFacility ? `Route to ${selectedFacility.name}` : "Emergency facilities map"
-            }
+            accuracyM={location?.accuracyM ?? null}
+            selectedMarkerId={selectedFacility?.id ?? null}
             onSelectMarker={(m) => {
               if (m) {
                 const fac = combinedFacilities.find((f) => f.id === m.id);
@@ -376,17 +420,17 @@ function ResourcesRoute() {
           {selectedFacility && (
             <Panel title="Static Road Route & Safety Assessment">
               {routingState === "requesting-location" ? (
-                <p className="flex items-center gap-2 text-sm text-muted-foreground py-2">
-                  <Crosshair className="h-4 w-4 animate-spin text-primary" />
+                <p className="flex items-center gap-2 text-sm text-slate-400 py-2">
+                  <Crosshair className="h-4 w-4 animate-spin text-cyan-400" />
                   Acquiring device GPS coordinates…
                 </p>
               ) : routingState === "calculating-route" ? (
-                <p className="flex items-center gap-2 text-sm text-muted-foreground py-2">
-                  <RefreshCw className="h-4 w-4 animate-spin text-primary" />
+                <p className="flex items-center gap-2 text-sm text-slate-400 py-2">
+                  <RefreshCw className="h-4 w-4 animate-spin text-cyan-400" />
                   Calculating static road route…
                 </p>
               ) : routingState === "error" || routeError ? (
-                <div className="rounded-lg border border-accent/40 bg-accent/10 p-3.5 text-xs text-accent space-y-2">
+                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3.5 text-xs text-amber-300 space-y-2">
                   <p className="font-semibold">{routeError}</p>
                   <div className="flex flex-wrap items-center gap-2 pt-1">
                     <Button
@@ -395,21 +439,36 @@ function ResourcesRoute() {
                       onClick={() => handleRouteHere(selectedFacility)}
                     >
                       <RefreshCw className="h-3 w-3" />
-                      Retry local route calculation
+                      Retry Local Route Calculation
                     </Button>
                   </div>
                 </div>
               ) : activeRoute ? (
                 <div className="space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 pb-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
                     <div>
-                      <p className="text-sm font-bold flex items-center gap-1.5">
-                        <RouteIcon className="h-4 w-4 text-primary" />
+                      <p className="text-sm font-bold text-white flex items-center gap-1.5">
+                        <RouteIcon className="h-4 w-4 text-cyan-400" />
                         {activeRoute.summary}
                       </p>
-                      <p className="text-xs text-muted-foreground mt-0.5">
-                        {activeRoute.distanceText} · {activeRoute.durationText} estimated travel
+                      <p className="text-xs text-slate-400 mt-0.5">
+                        {activeRoute.distanceText} · {activeRoute.durationText} estimated static
+                        travel
                       </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span
+                        className={`rounded px-2 py-0.5 text-[10px] font-bold ${
+                          activeRoute.routeConfidence === "HIGH"
+                            ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                            : activeRoute.routeConfidence === "MEDIUM"
+                              ? "bg-sky-500/20 text-sky-300 border border-sky-500/40"
+                              : "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                        }`}
+                      >
+                        Confidence: {activeRoute.routeConfidence}
+                      </span>
                     </div>
                   </div>
 
@@ -417,28 +476,37 @@ function ResourcesRoute() {
                   <div
                     className={`rounded-lg border p-3 text-xs ${
                       activeRoute.hazardRisk === "CRITICAL" || activeRoute.hazardRisk === "HIGH"
-                        ? "border-destructive/40 bg-destructive/10 text-destructive-foreground"
-                        : "border-safe/40 bg-safe/10 text-safe"
+                        ? "border-red-500/40 bg-red-500/10 text-red-300"
+                        : "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
                     }`}
                   >
                     <p className="font-semibold flex items-center gap-1.5">
                       <AlertTriangle className="h-4 w-4 shrink-0" />
                       {activeRoute.hazardRisk === "LOW"
-                        ? "Lower-risk route based on available hazard data"
+                        ? "Lower-risk route based on available static hazard data"
                         : "Potential hazard intersection detected"}
                     </p>
-                    <p className="mt-1 text-muted-foreground">{activeRoute.hazardReason}</p>
+                    {activeRoute.hazardReason && (
+                      <p className="mt-1 text-slate-400">{activeRoute.hazardReason}</p>
+                    )}
                   </div>
+
+                  {/* Safety Disclaimer */}
+                  <p className="text-[11px] italic text-slate-500">
+                    {activeRoute.safetyDisclaimer}
+                  </p>
 
                   {/* Step Guidance Snippet */}
                   {activeRoute.steps.length > 0 && (
-                    <div className="border-t border-border/60 pt-2 text-xs text-muted-foreground">
-                      <p className="font-semibold text-foreground mb-1">Key highway segments:</p>
+                    <div className="border-t border-slate-800 pt-2 text-xs text-slate-400">
+                      <p className="font-semibold text-slate-200 mb-1">Key Road Segments:</p>
                       <div className="space-y-1 mt-1">
                         {activeRoute.steps.slice(0, 4).map((step, sIdx) => (
                           <p key={sIdx} className="flex items-center justify-between">
                             <span>• {step.instruction}</span>
-                            <span className="font-mono text-[10px]">{step.distanceText}</span>
+                            <span className="font-mono text-[10px] text-slate-300">
+                              {step.distanceText}
+                            </span>
                           </p>
                         ))}
                       </div>
@@ -450,7 +518,7 @@ function ResourcesRoute() {
                     {selectedFacility.phone && (
                       <a
                         href={`tel:${selectedFacility.phone}`}
-                        className="inline-flex min-h-9 items-center gap-1.5 rounded-md border border-border px-3 text-xs font-semibold hover:bg-surface-2"
+                        className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 text-xs font-semibold text-slate-200 hover:bg-slate-800"
                       >
                         <Phone className="h-3.5 w-3.5 text-emerald-400" />
                         Call {selectedFacility.phone}
@@ -487,6 +555,8 @@ function FacilityCard({
       <Shield className="h-5 w-5 text-blue-400" />
     ) : facility.type === "fire_station" ? (
       <Truck className="h-5 w-5 text-amber-400" />
+    ) : facility.type === "rescue_station" ? (
+      <LifeBuoy className="h-5 w-5 text-purple-400" />
     ) : (
       <Building2 className="h-5 w-5 text-sky-400" />
     );
@@ -496,41 +566,43 @@ function FacilityCard({
       onClick={onSelect}
       className={`group relative cursor-pointer rounded-xl border p-4 transition-all ${
         isSelected
-          ? "border-primary bg-primary/10 shadow-md ring-1 ring-primary/40"
-          : "border-border bg-surface hover:border-primary/50 hover:bg-surface-2"
+          ? "border-cyan-500 bg-cyan-500/10 shadow-lg ring-1 ring-cyan-500/40"
+          : "border-slate-800/80 bg-slate-900/60 hover:border-cyan-500/40 hover:bg-slate-900"
       }`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-start gap-3">
-          <div className="mt-0.5 rounded-lg border border-border bg-surface-2 p-2">{icon}</div>
+          <div className="mt-0.5 rounded-lg border border-slate-800 bg-slate-950 p-2">{icon}</div>
           <div>
-            <h3 className="text-sm font-bold text-foreground group-hover:text-primary transition-colors">
+            <h3 className="text-sm font-bold text-white group-hover:text-cyan-300 transition-colors">
               {facility.name}
             </h3>
-            <p className="mt-0.5 text-xs text-muted-foreground flex items-center gap-2">
+            <p className="mt-0.5 text-xs text-slate-400 flex items-center gap-2">
               <span>{facility.categoryLabel}</span>
               <span>•</span>
-              <span className="font-semibold text-foreground">{facility.district}</span>
+              <span className="font-semibold text-slate-300">{facility.district}</span>
             </p>
             {facility.address && (
-              <p className="mt-1 text-[11px] text-muted-foreground/80 line-clamp-1">
-                {facility.address}
-              </p>
+              <p className="mt-1 text-[11px] text-slate-400 line-clamp-1">{facility.address}</p>
             )}
           </div>
         </div>
 
         <div className="text-right shrink-0">
-          <span className="font-mono text-sm font-bold text-primary">{distanceKm} km</span>
-          <p className="text-[10px] text-muted-foreground">road access</p>
+          <span className="font-mono text-sm font-bold text-cyan-400">
+            {formatEmergencyDistance(distanceKm)}
+          </span>
+          <p className="text-[10px] text-slate-500">proximity</p>
         </div>
       </div>
 
-      <div className="mt-3.5 flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-2.5">
+      <div className="mt-3.5 flex flex-wrap items-center justify-between gap-2 border-t border-slate-800/60 pt-2.5">
         <div className="flex items-center gap-2">
-          <DataTag quality="CACHED" />
+          <span className="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-400 border border-emerald-500/30">
+            Verified
+          </span>
           {facility.phone && (
-            <span className="font-mono text-[11px] text-muted-foreground flex items-center gap-1">
+            <span className="font-mono text-[11px] text-slate-400 flex items-center gap-1">
               <Phone className="h-3 w-3 text-emerald-400" /> {facility.phone}
             </span>
           )}

@@ -1,5 +1,5 @@
 import { type LatLng, isValidCoordinate, haversineKm } from "./geo";
-import { isInsideAndhraPradesh } from "./domain";
+import { isInsideIndia } from "./domain";
 import {
   AP_ROAD_NODES,
   AP_ROAD_SEGMENTS,
@@ -15,6 +15,8 @@ export interface RouteStep {
   lat: number;
   lng: number;
 }
+
+export type RouteConfidence = "HIGH" | "MEDIUM" | "LOW";
 
 export interface CalculatedRoute {
   id: string;
@@ -35,6 +37,9 @@ export interface CalculatedRoute {
   variantIndex: number;
   hazardRisk: "LOW" | "MODERATE" | "HIGH" | "CRITICAL";
   hazardReason: string | null;
+  routeConfidence: RouteConfidence;
+  confidenceReason: string;
+  safetyDisclaimer: string;
 }
 
 interface GraphEdge {
@@ -180,11 +185,8 @@ export async function calculateStaticRoadRoutes(
     throw new Error("Invalid origin or destination coordinates.");
   }
 
-  if (
-    !isInsideAndhraPradesh(origin.lat, origin.lng) &&
-    !isInsideAndhraPradesh(destination.lat, destination.lng)
-  ) {
-    throw new Error("Locations must be within the Andhra Pradesh operations area.");
+  if (!isInsideIndia(origin.lat, origin.lng) && !isInsideIndia(destination.lat, destination.lng)) {
+    throw new Error("Locations must be within the India operations area.");
   }
 
   const startRoadNode = findNearestRoadNode(origin);
@@ -295,6 +297,17 @@ export async function calculateStaticRoadRoutes(
       ? `Via ${Array.from(new Set(pathResult.segments.map((s) => s.roadName))).join(" / ")}`
       : "Local connector route";
 
+  // Calculate route confidence based on snapping proximity and network completeness
+  let routeConfidence: RouteConfidence = "HIGH";
+  let confidenceReason = "Verified road network geometry";
+  if (originToStartDist > 15 || targetToDestDist > 15) {
+    routeConfidence = "LOW";
+    confidenceReason = "Approximate local connector road used for remote location";
+  } else if (originToStartDist > 5 || targetToDestDist > 5) {
+    routeConfidence = "MEDIUM";
+    confidenceReason = "Regional arterial road connection";
+  }
+
   const primaryRoute: CalculatedRoute = {
     id: `static-route-primary-${Date.now()}`,
     summary: primarySummary,
@@ -309,6 +322,10 @@ export async function calculateStaticRoadRoutes(
     variantIndex: 0,
     hazardRisk: "LOW",
     hazardReason: null,
+    routeConfidence,
+    confidenceReason,
+    safetyDisclaimer:
+      "Route safety is based on available static hazard and road data and may not reflect current road closures, flooding, traffic, or emergency conditions.",
   };
 
   return [primaryRoute];
