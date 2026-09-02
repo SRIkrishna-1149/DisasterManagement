@@ -7,7 +7,7 @@ import { Button, ErrorState, Field, inputClass, Panel } from "@/components/kit";
 import { useAuth } from "@/hooks/useAuth";
 import { useEmergencyLocation } from "@/hooks/useEmergencyLocation";
 import {
-  isInsideAndhraPradesh,
+  isInsideIndia,
   LOCATION_CONFIDENCE,
   SEVERITIES,
   SOS_CATEGORIES,
@@ -71,11 +71,9 @@ function SosForm() {
       Math.abs(lat) > 90 ||
       Math.abs(lng) > 180 ||
       (lat === 0 && lng === 0) ||
-      !isInsideAndhraPradesh(lat, lng)
+      !isInsideIndia(lat, lng)
     ) {
-      setError(
-        "Enter coordinates within the Andhra Pradesh operating area, or use a landmark instead.",
-      );
+      setError("Enter coordinates within the India operating area, or use a landmark instead.");
       return;
     }
     setManual(lat, lng, null, "MANUAL_PIN");
@@ -93,8 +91,8 @@ function SosForm() {
         throw new Error("Choose the nearest landmark so responders have an approximate location.");
       if (source !== "LANDMARK" && !effectiveLocation)
         throw new Error("Location is needed. Allow GPS, enter a manual pin, or choose a landmark.");
-      if (effectiveLocation && !isInsideAndhraPradesh(effectiveLocation.lat, effectiveLocation.lng))
-        throw new Error("The emergency location must be within the Andhra Pradesh operating area.");
+      if (effectiveLocation && !isInsideIndia(effectiveLocation.lat, effectiveLocation.lng))
+        throw new Error("The emergency location must be within the India operating area.");
       const draft: SosDraft = {
         reporter_name: null,
         people_count: Math.max(1, Math.floor(Number(people) || 1)),

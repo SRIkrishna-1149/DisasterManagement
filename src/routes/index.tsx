@@ -133,28 +133,17 @@ function HomeRoute() {
         score: r.risk_score,
         quality: "RECENT" as const,
       })),
-      ...(resources.data ?? []).map((r) => ({
-        id: `res-${r.id}`,
-        kind: "resource" as const,
-        label: r.name,
-        detail: `${r.status.replaceAll("_", " ")} · ${r.resource_type}`,
-        lat: r.latitude,
-        lng: r.longitude,
-        phone: r.contact_phone,
-        address: r.address,
-        quality: "CACHED" as const,
-      })),
-    ],
-    [risks.data, resources.data],
-  );
+      ...(resources.data ?? []).map((r) => {
+        let subType: MapMarker["subType"] = "OTHER";
+        if (r.resource_type === "hospital") subType = "HOSPITAL";
+        else if (r.resource_type === "shelter") subType = "SHELTER";
+        else if (r.resource_type === "police") subType = "POLICE";
+        else if (r.resource_type === "fire_station") subType = "FIRE";
+        else if (r.resource_type === "rescue_station") subType = "RESCUE_BASE";
+        else if (r.resource_type === "emergency_facility") subType = "EVACUATION_POINT";
 
-  return (
-    <AppShell>
-      <div className="space-y-5">
-        {/* Hero Section */}
-        <section className="relative overflow-hidden rounded-2xl border border-primary/25 bg-gradient-to-br from-primary/15 via-surface to-surface p-5 sm:p-8">
-          <div className="absolute -right-10 -top-24 h-64 w-64 rounded-full border border-primary/20" />
-          <div className="absolute -right-2 -top-16 h-48 w-48 rounded-full border border-primary/15" />
+        return {
+          id: `res-${r.id}`,
           <div className="relative max-w-3xl">
             <div className="flex flex-wrap items-center gap-2">
               <span className="rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 font-mono text-[10px] font-bold tracking-wider text-primary uppercase">

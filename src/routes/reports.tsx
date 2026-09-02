@@ -25,13 +25,7 @@ import {
 } from "@/components/kit";
 import { useAuth } from "@/hooks/useAuth";
 import { useEmergencyLocation } from "@/hooks/useEmergencyLocation";
-import {
-  isInsideAndhraPradesh,
-  REPORT_TYPES,
-  type Severity,
-  SEVERITIES,
-  localTime,
-} from "@/lib/domain";
+import { isInsideIndia, REPORT_TYPES, type Severity, SEVERITIES, localTime } from "@/lib/domain";
 import { calculateReportAnalytics, type ReportAnalytics } from "@/lib/reports";
 import { newIdempotencyKey } from "@/lib/sos-service";
 import { enqueue } from "@/lib/offline-queue";
@@ -140,8 +134,8 @@ function ReportForm() {
     setBusy(true);
     setNotice(null);
     setError(null);
-    if (location && !isInsideAndhraPradesh(location.lat, location.lng)) {
-      setError("Attached location must be within the Andhra Pradesh operating area.");
+    if (location && !isInsideIndia(location.lat, location.lng)) {
+      setError("Attached location must be within the India operating area.");
       setBusy(false);
       return;
     }
@@ -244,11 +238,32 @@ function ReportForm() {
                   placeholder="Describe what is happening and when you observed it…"
                 />
               </Field>
-              {location && (
-                <div className="flex items-center gap-2 rounded-lg border border-primary/25 bg-primary/5 p-3 text-xs text-muted-foreground">
-                  <MapPin className="h-4 w-4 text-primary" />
-                  Location attached: {location.lat.toFixed(4)}, {location.lng.toFixed(4)}
-                  <DataTag quality="RECENT" />
+              {location ? (
+                <div className="flex items-center justify-between rounded-lg border border-primary/25 bg-primary/5 p-3 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-2">
+                    <MapPin className="h-4 w-4 text-primary" />
+                    <span>
+                      Location attached: {location.lat.toFixed(4)}, {location.lng.toFixed(4)}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={request}
+                    className="text-[11px] font-semibold text-primary underline hover:text-primary/80"
+                  >
+                    Update GPS
+                  </button>
+                </div>
+              ) : (
+                <div className="flex items-center justify-between rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
+                  <span className="flex items-center gap-1.5">
+                    <MapPin className="h-4 w-4 text-muted-foreground" />
+                    No location attached (optional)
+                  </span>
+                  <Button type="button" size="sm" variant="outline" onClick={request}>
+                    <MapPin className="h-3.5 w-3.5 mr-1" />
+                    Attach My Location
+                  </Button>
                 </div>
               )}
               {error && <ErrorState message={error} />}

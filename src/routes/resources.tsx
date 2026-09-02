@@ -48,7 +48,7 @@ export const Route = createFileRoute("/resources")({ component: ResourcesRoute }
 
 function ResourcesRoute() {
   const [kind, setKind] = useState<"ALL" | FacilityType>("ALL");
-  const [searchRadiusKm, setSearchRadiusKm] = useState<number>(25);
+  const [searchRadiusKm, setSearchRadiusKm] = useState<number>(15);
   const [selectedFacilityId, setSelectedFacilityId] = useState<string | null>(null);
   const [activeRoutes, setActiveRoutes] = useState<CalculatedRoute[]>([]);
   const [selectedRouteIndex, setSelectedRouteIndex] = useState(0);
@@ -242,9 +242,18 @@ function ResourcesRoute() {
     const origin = location || INDIA_CENTER;
     return combinedFacilities.map((f) => {
       const dist = haversineKm(origin, { lat: f.lat, lng: f.lng });
+      let subType: MapMarker["subType"] = "OTHER";
+      if (f.type === "hospital") subType = "HOSPITAL";
+      else if (f.type === "shelter") subType = "SHELTER";
+      else if (f.type === "police") subType = "POLICE";
+      else if (f.type === "fire_station") subType = "FIRE";
+      else if (f.type === "rescue_station") subType = "RESCUE_BASE";
+      else if (f.type === "emergency_facility") subType = "EVACUATION_POINT";
+
       return {
         id: f.id,
         kind: "resource" as const,
+        subType,
         label: f.name,
         detail: `${f.categoryLabel} · ${formatEmergencyDistance(dist)} away`,
         lat: f.lat,
@@ -311,9 +320,9 @@ function ResourcesRoute() {
         <div className="flex items-center gap-1.5 text-xs text-slate-400">
           <span>Radius:</span>
           {[
-            [10, "10 km"],
-            [25, "25 km"],
-            [75, "75 km"],
+            [5, "5 km"],
+            [15, "15 km"],
+            [50, "50 km"],
             [300, "All Region"],
           ].map(([rad, radLabel]) => (
             <button

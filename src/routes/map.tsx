@@ -143,17 +143,28 @@ function MapRoute() {
           score: row.risk_score,
           quality: row.data_quality as DataQuality,
         })),
-      ...(resources.data ?? []).map((row) => ({
-        id: `resource-${row.id}`,
-        kind: "resource" as const,
-        label: row.name,
-        detail: `${row.status.replaceAll("_", " ")} · ${row.resource_type}`,
-        lat: row.latitude,
-        lng: row.longitude,
-        phone: row.contact_phone,
-        address: row.address,
-        quality: "CACHED" as const,
-      })),
+      ...(resources.data ?? []).map((row) => {
+        let subType: MapMarker["subType"] = "OTHER";
+        if (row.resource_type === "hospital") subType = "HOSPITAL";
+        else if (row.resource_type === "shelter") subType = "SHELTER";
+        else if (row.resource_type === "police") subType = "POLICE";
+        else if (row.resource_type === "fire_station") subType = "FIRE";
+        else if (row.resource_type === "rescue_station") subType = "RESCUE_BASE";
+        else if (row.resource_type === "emergency_facility") subType = "EVACUATION_POINT";
+
+        return {
+          id: `resource-${row.id}`,
+          kind: "resource" as const,
+          subType,
+          label: row.name,
+          detail: `${row.status.replaceAll("_", " ")} · ${row.resource_type}`,
+          lat: row.latitude,
+          lng: row.longitude,
+          phone: row.contact_phone,
+          address: row.address,
+          quality: "CACHED" as const,
+        };
+      }),
       ...(alerts.data ?? [])
         .filter((row) => row.latitude !== null && row.longitude !== null)
         .map((row) => ({

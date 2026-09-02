@@ -47,12 +47,14 @@ import { INDIAN_ROAD_SEGMENTS } from "@/lib/static-road-network";
 import type { CalculatedRoute } from "@/lib/static-router";
 import { DataTag, Panel, Button } from "./kit";
 
-export type BasemapType = "satellite" | "street";
+export type BasemapType = "hybrid" | "satellite" | "street";
 
 export interface MapMarker extends LatLng {
   id: string;
   label: string;
   kind: "risk" | "resource" | "sos" | "team" | "alert" | "report";
+  subType?:
+    "HOSPITAL" | "SHELTER" | "POLICE" | "FIRE" | "RESCUE_BASE" | "EVACUATION_POINT" | "OTHER";
   detail?: string;
   quality?: DataQuality;
   score?: number;
@@ -110,6 +112,62 @@ const KIND_STYLE: Record<
   },
 };
 
+export function getMarkerVisual(marker: MapMarker) {
+  if (marker.kind === "resource" && marker.subType) {
+    switch (marker.subType) {
+      case "HOSPITAL":
+        return {
+          bg: "#10b981",
+          text: "#ffffff",
+          ring: "rgba(16, 185, 129, 0.45)",
+          icon: "✚",
+          label: "Hospital / Medical",
+        };
+      case "SHELTER":
+        return {
+          bg: "#06b6d4",
+          text: "#ffffff",
+          ring: "rgba(6, 182, 212, 0.45)",
+          icon: "⌂",
+          label: "Relief Shelter",
+        };
+      case "POLICE":
+        return {
+          bg: "#6366f1",
+          text: "#ffffff",
+          ring: "rgba(99, 102, 241, 0.45)",
+          icon: "🛡",
+          label: "Police Station",
+        };
+      case "FIRE":
+        return {
+          bg: "#f97316",
+          text: "#ffffff",
+          ring: "rgba(249, 115, 22, 0.45)",
+          icon: "🚒",
+          label: "Fire & Rescue",
+        };
+      case "RESCUE_BASE":
+        return {
+          bg: "#0ea5e9",
+          text: "#ffffff",
+          ring: "rgba(14, 165, 233, 0.45)",
+          icon: "◆",
+          label: "NDRF/SDRF Base",
+        };
+      case "EVACUATION_POINT":
+        return {
+          bg: "#eab308",
+          text: "#000000",
+          ring: "rgba(234, 179, 8, 0.45)",
+          icon: "★",
+          label: "Evacuation Point",
+        };
+    }
+  }
+  return KIND_STYLE[marker.kind] || KIND_STYLE.resource;
+}
+
 // Legally permitted open GIS tile sources (Zero paid Google Cloud API requirements)
 const TILE_SOURCES: Record<
   BasemapType,
@@ -121,7 +179,7 @@ const TILE_SOURCES: Record<
     label: string;
   }
 > = {
-  satellite: {
+  hybrid: {
     getUrl: (x, y, z) =>
       `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`,
     overlayUrl: (x, y, z) =>
@@ -129,12 +187,19 @@ const TILE_SOURCES: Record<
     transportUrl: (x, y, z) =>
       `https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/${z}/${y}/${x}`,
     attribution: "Tiles © Esri, Maxar, Earthstar Geographics, USDA, USGS",
-    label: "Satellite Imagery",
+    label: "Satellite + Labels",
+  },
+  satellite: {
+    getUrl: (x, y, z) =>
+      `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`,
+    attribution: "Tiles © Esri, Maxar, Earthstar Geographics, USDA, USGS",
+    label: "Satellite",
   },
   street: {
-    getUrl: (x, y, z) => `https://basemaps.cartocdn.com/rastertiles/voyager/${z}/${x}/${y}.png`,
-    attribution: "Map Data © OpenStreetMap contributors, © CARTO",
-    label: "Street / Topo Map",
+    getUrl: (x, y, z) =>
+      `https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/${z}/${y}/${x}`,
+    attribution: "Tiles © Esri, HERE, Garmin, OpenStreetMap contributors",
+    label: "Street / Roads",
   },
 };
 
@@ -311,7 +376,7 @@ function OperationsMapInternal({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animFrameRef = useRef<number | null>(null);
 
-  const [basemap, setBasemap] = useState<BasemapType>("satellite");
+  const [basemap, setBasemap] = useState<BasemapType>("hybrid");
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showLayerDrawer, setShowLayerDrawer] = useState(false);
   const [selectedMarker, setSelectedMarker] = useState<MapMarker | null>(null);
@@ -782,7 +847,7 @@ function OperationsMapInternal({
 
         const isHovered = hoveredMarker?.id === marker.id;
         const isSelected = selectedMarker?.id === marker.id;
-        const style = KIND_STYLE[marker.kind] || KIND_STYLE.resource;
+        const style = getMarkerVisual(marker);
 
         const radius = isSelected ? 14 : isHovered ? 12 : 9;
 
@@ -1100,44 +1165,6 @@ function OperationsMapInternal({
     setHoveredMarker(null);
   };
 
-  // Cursor-centered mouse wheel zoom
-  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
-
-    const { center, zoom } = viewportRef.current;
-    const zoomDelta = e.deltaY < 0 ? 0.35 : -0.35;
-    const newZoom = Math.max(4.5, Math.min(18.0, zoom + zoomDelta));
-    if (newZoom === zoom) return;
-
-    const mouseWorldBefore = latLngToWorld(center.lat, center.lng, zoom);
-    const cursorWorldBefore = {
-      x: mouseWorldBefore.x + (mouseX - rect.width / 2),
-      y: mouseWorldBefore.y + (mouseY - rect.height / 2),
-    };
-    const cursorLatLng = worldToLatLng(cursorWorldBefore.x, cursorWorldBefore.y, zoom);
-
-    const cursorWorldAfter = latLngToWorld(cursorLatLng.lat, cursorLatLng.lng, newZoom);
-    const newCenterWorld = {
-      x: cursorWorldAfter.x - (mouseX - rect.width / 2),
-      y: cursorWorldAfter.y - (mouseY - rect.height / 2),
-    };
-
-    const newCenter = worldToLatLng(newCenterWorld.x, newCenterWorld.y, newZoom);
-    newCenter.lat = Math.max(INDIA_BOUNDS.minLat, Math.min(INDIA_BOUNDS.maxLat, newCenter.lat));
-    newCenter.lng = Math.max(INDIA_BOUNDS.minLng, Math.min(INDIA_BOUNDS.maxLng, newCenter.lng));
-
-    viewportRef.current = {
-      center: newCenter,
-      zoom: newZoom,
-    };
-    renderMap();
-  };
-
   // Mobile pinch-to-zoom handlers
   const handleTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
     if (e.touches.length === 2 && e.touches[0] && e.touches[1]) {
@@ -1152,15 +1179,14 @@ function OperationsMapInternal({
 
   const handleTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
     if (e.touches.length === 2 && pinchStartDistRef.current && e.touches[0] && e.touches[1]) {
-      e.preventDefault();
       const dist = Math.hypot(
         e.touches[0].clientX - e.touches[1].clientX,
         e.touches[0].clientY - e.touches[1].clientY,
       );
       const zoomFactor = dist / pinchStartDistRef.current;
       const newZoom = Math.max(
-        4.5,
-        Math.min(18.0, pinchStartZoomRef.current + Math.log2(zoomFactor)),
+        5.0,
+        Math.min(18.5, pinchStartZoomRef.current + Math.log2(zoomFactor)),
       );
       viewportRef.current.zoom = newZoom;
       renderMap();
@@ -1171,14 +1197,14 @@ function OperationsMapInternal({
     pinchStartDistRef.current = null;
   };
 
-  // UI Control actions
+  // UI Control actions - smooth deep zoom from Z5 to Z18.5
   const zoomIn = () => {
-    viewportRef.current.zoom = Math.min(18.0, viewportRef.current.zoom + 1.0);
+    viewportRef.current.zoom = Math.min(18.5, viewportRef.current.zoom + 1.0);
     renderMap();
   };
 
   const zoomOut = () => {
-    viewportRef.current.zoom = Math.max(4.5, viewportRef.current.zoom - 1.0);
+    viewportRef.current.zoom = Math.max(5.0, viewportRef.current.zoom - 1.0);
     renderMap();
   };
 
@@ -1224,28 +1250,25 @@ function OperationsMapInternal({
         className,
       )}
     >
-      {/* Canvas rendering layer */}
+      {/* Canvas rendering layer - Notice: Mouse wheel is NOT captured, page scrolls naturally! */}
       <canvas
         ref={canvasRef}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerCancel}
-        onWheel={handleWheel}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
-        className="absolute inset-0 h-full w-full touch-none"
+        className="absolute inset-0 h-full w-full"
       />
 
-      {/* Top Bar: Operations Badge & Active Layer Indicators */}
+      {/* Top Bar: Clean mode indicator & Active route stats */}
       <div className="pointer-events-none absolute left-3 top-3 z-10 flex flex-wrap items-center gap-2">
-        <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-cyan-500/30 bg-slate-950/90 px-3 py-1.5 shadow-lg backdrop-blur-md">
-          <div className="h-2 w-2 animate-pulse rounded-full bg-cyan-400" />
-          <span className="text-xs font-bold tracking-wide text-white">
-            Satellite Operations Map
-          </span>
-          <span className="rounded bg-cyan-500/20 px-1.5 py-0.5 text-[10px] font-semibold text-cyan-300">
+        <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-slate-700/80 bg-slate-950/90 px-3 py-1.5 shadow-lg backdrop-blur-md">
+          <div className="h-2 w-2 rounded-full bg-emerald-400" />
+          <span className="text-xs font-semibold text-white">{TILE_SOURCES[basemap].label}</span>
+          <span className="rounded bg-slate-800 px-1.5 py-0.5 text-[10px] font-medium text-slate-300">
             India Scope
           </span>
         </div>
@@ -1339,32 +1362,44 @@ function OperationsMapInternal({
             </button>
           </div>
 
-          <div className="mb-3">
+          <div className="mb-3 space-y-1.5">
             <span className="text-[11px] font-medium text-slate-400">Basemap Style</span>
-            <div className="mt-1.5 grid grid-cols-2 gap-1.5">
+            <div className="grid grid-cols-1 gap-1.5">
+              <button
+                type="button"
+                onClick={() => setBasemap("hybrid")}
+                className={cn(
+                  "rounded-md border px-2.5 py-1.5 text-left text-xs font-medium transition",
+                  basemap === "hybrid"
+                    ? "border-cyan-500/60 bg-cyan-500/20 text-cyan-300 font-semibold"
+                    : "border-slate-800 bg-slate-900 text-slate-400 hover:bg-slate-800",
+                )}
+              >
+                Satellite + Labels
+              </button>
               <button
                 type="button"
                 onClick={() => setBasemap("satellite")}
                 className={cn(
-                  "rounded-md border px-2.5 py-1.5 text-center text-xs font-medium transition",
+                  "rounded-md border px-2.5 py-1.5 text-left text-xs font-medium transition",
                   basemap === "satellite"
                     ? "border-cyan-500/60 bg-cyan-500/20 text-cyan-300 font-semibold"
                     : "border-slate-800 bg-slate-900 text-slate-400 hover:bg-slate-800",
                 )}
               >
-                Satellite Aerial
+                Satellite (Aerial Only)
               </button>
               <button
                 type="button"
                 onClick={() => setBasemap("street")}
                 className={cn(
-                  "rounded-md border px-2.5 py-1.5 text-center text-xs font-medium transition",
+                  "rounded-md border px-2.5 py-1.5 text-left text-xs font-medium transition",
                   basemap === "street"
                     ? "border-cyan-500/60 bg-cyan-500/20 text-cyan-300 font-semibold"
                     : "border-slate-800 bg-slate-900 text-slate-400 hover:bg-slate-800",
                 )}
               >
-                Street / Topo
+                Street / Roads
               </button>
             </div>
           </div>
