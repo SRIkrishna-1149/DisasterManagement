@@ -144,7 +144,25 @@ function HomeRoute() {
 
         return {
           id: `res-${r.id}`,
+          kind: "resource" as const,
+          subType,
+          label: r.name,
+          detail: r.resource_type,
+          lat: r.latitude ?? AP_CENTER.lat,
+          lng: r.longitude ?? AP_CENTER.lng,
+          quality: "RECENT" as const,
+        };
+      }),
+    ],
+    [risks.data, resources.data],
+  );
+
+  return (
+    <AppShell>
+      <div className="space-y-6 p-4 sm:p-6">
+        <section className="relative overflow-hidden rounded-xl border border-border bg-surface/60 p-5 sm:p-8">
           <div className="relative max-w-3xl">
+
             <div className="flex flex-wrap items-center gap-2">
               <span className="rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 font-mono text-[10px] font-bold tracking-wider text-primary uppercase">
                 Predict · Alert · Respond
