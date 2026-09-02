@@ -256,10 +256,10 @@ export function QuickSosDialog({ onClose }: { onClose: () => void }) {
                 <p className="mt-3 text-xs text-muted-foreground">
                   {location
                     ? `GPS ready · ${location.lat.toFixed(4)}, ${location.lng.toFixed(4)}${location.accuracyM ? ` · accuracy ${Math.round(location.accuracyM)} m` : ""}`
-                    : status === "locating"
+                    : status === "acquiring-gps" || status === "requesting-permission"
                       ? "Requesting GPS…"
                       : status === "outside-region"
-                        ? "GPS is outside the Andhra Pradesh operating area. Use a manual pin or landmark."
+                        ? "GPS is outside the India operating area. Use a manual pin or landmark."
                         : "GPS unavailable or not yet granted."}
                 </p>
               )}

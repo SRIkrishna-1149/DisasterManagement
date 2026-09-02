@@ -1,7 +1,15 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useRef, useState } from "react";
-import { AlertTriangle, Filter, MapPinned, Radio, ShieldAlert, Navigation } from "lucide-react";
+import {
+  AlertTriangle,
+  Crosshair,
+  Filter,
+  MapPinned,
+  Radio,
+  ShieldAlert,
+  Navigation,
+} from "lucide-react";
 import { MapPanel, type MapMarker } from "@/components/map-panel";
 import {
   Button,
@@ -34,7 +42,14 @@ export const Route = createFileRoute("/map")({ component: MapRoute });
 
 function MapRoute() {
   const { user, isOperator } = useAuth();
-  const { location: userLoc, getCurrentLocation } = useEmergencyLocation();
+  const {
+    location: userLoc,
+    status: locStatus,
+    errorMessage: locError,
+    accuracyWarning,
+    request: requestLocation,
+    getCurrentLocation,
+  } = useEmergencyLocation();
   const [activeRoute, setActiveRoute] = useState<CalculatedRoute | null>(null);
   const [routingTarget, setRoutingTarget] = useState<MapMarker | null>(null);
 
@@ -297,6 +312,21 @@ function MapRoute() {
               Clear active route
             </Button>
           )}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => requestLocation()}
+            disabled={locStatus === "acquiring-gps"}
+          >
+            <Crosshair
+              className={`h-4 w-4 ${locStatus === "acquiring-gps" ? "animate-spin text-cyan-400" : ""}`}
+            />
+            {locStatus === "acquiring-gps"
+              ? "Acquiring GPS…"
+              : userLoc?.accuracyM !== null && userLoc?.accuracyM !== undefined
+                ? `GPS (±${Math.round(userLoc.accuracyM)} m)`
+                : "My Location"}
+          </Button>
           <Link to="/resources">
             <Button>
               <MapPinned className="h-4 w-4" />
@@ -321,11 +351,31 @@ function MapRoute() {
         />
       </section>
 
+      {accuracyWarning && (
+        <div className="mt-4 flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-300">
+          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
+          <span>{accuracyWarning}</span>
+        </div>
+      )}
+
+      {locError && (
+        <div className="mt-4 flex items-center justify-between gap-3 rounded-xl border border-red-500/40 bg-red-500/10 px-3.5 py-2.5 text-xs text-red-300">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4 shrink-0 text-red-400" />
+            <span>{locError}</span>
+          </div>
+          <Button size="sm" variant="outline" onClick={() => requestLocation()}>
+            Try Again
+          </Button>
+        </div>
+      )}
+
       <MapPanel
         markers={markers}
         className="mt-5"
         userLocation={userLoc ? { lat: userLoc.lat, lng: userLoc.lng } : null}
         accuracyM={userLoc?.accuracyM ?? null}
+        onRequestLocation={getCurrentLocation}
         activeRoute={activeRoute}
         onRouteToMarker={handleRouteToMarker}
       />

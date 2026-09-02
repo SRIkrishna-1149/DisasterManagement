@@ -59,6 +59,8 @@ function ResourcesRoute() {
   const {
     location,
     status: locStatus,
+    errorMessage: locError,
+    accuracyWarning,
     request: requestLocation,
     getCurrentLocation,
   } = useEmergencyLocation();
@@ -144,6 +146,52 @@ function ResourcesRoute() {
     () => combinedFacilities.find((f) => f.id === selectedFacilityId) ?? null,
     [combinedFacilities, selectedFacilityId],
   );
+
+  // Emergency Priority: Nearest facility across distinct categories (Requirement #26)
+  const nearestByCategory = useMemo(() => {
+    const origin = location || INDIA_CENTER;
+    const categories: Array<{ type: FacilityType; label: string; icon: string }> = [
+      { type: "hospital", label: "Hospital", icon: "✚" },
+      { type: "police", label: "Police", icon: "🛡" },
+      { type: "shelter", label: "Shelter", icon: "⌂" },
+      { type: "fire_station", label: "Fire Station", icon: "🚒" },
+      { type: "rescue_station", label: "Rescue Base", icon: "◆" },
+      { type: "emergency_facility", label: "Evacuation Point", icon: "★" },
+    ];
+
+    return categories
+      .map((cat) => {
+        const facs = INDIAN_STATIC_FACILITIES.filter((f) => f.type === cat.type);
+        if (facs.length === 0 || !facs[0]) return null;
+        let nearest: StaticFacility = facs[0];
+        let minDist = haversineKm(origin, { lat: nearest.lat, lng: nearest.lng });
+        for (let i = 1; i < facs.length; i++) {
+          const item = facs[i];
+          if (item) {
+            const d = haversineKm(origin, { lat: item.lat, lng: item.lng });
+            if (d < minDist) {
+              minDist = d;
+              nearest = item;
+            }
+          }
+        }
+        return {
+          category: cat,
+          facility: nearest,
+          distKm: minDist,
+        };
+      })
+      .filter(
+        (
+          item,
+        ): item is {
+          category: (typeof categories)[number];
+          facility: StaticFacility;
+          distKm: number;
+        } => item !== null,
+      )
+      .sort((a, b) => a.distKm - b.distKm);
+  }, [location]);
 
   // Compute static road routes locally with state machine and GPS acquisition
   const handleRouteHere = useCallback(
@@ -320,6 +368,8 @@ function ResourcesRoute() {
         <div className="flex items-center gap-1.5 text-xs text-slate-400">
           <span>Radius:</span>
           {[
+            [1, "1 km"],
+            [3, "3 km"],
             [5, "5 km"],
             [15, "15 km"],
             [50, "50 km"],
@@ -350,8 +400,27 @@ function ResourcesRoute() {
             />
           )}
 
+          {accuracyWarning && (
+            <div className="mb-3 flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2.5 text-xs text-amber-300">
+              <AlertTriangle className="h-4 w-4 shrink-0 text-amber-400" />
+              <span>{accuracyWarning}</span>
+            </div>
+          )}
+
+          {locError && (
+            <div className="mb-3 flex items-center justify-between gap-2 rounded-xl border border-red-500/40 bg-red-500/10 px-3.5 py-2.5 text-xs text-red-300">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 shrink-0 text-red-400" />
+                <span>{locError}</span>
+              </div>
+              <Button size="sm" variant="outline" onClick={() => requestLocation()}>
+                Try Again
+              </Button>
+            </div>
+          )}
+
           {/* Location prompt banner if GPS not active */}
-          {!location && (
+          {!location ? (
             <div className="mb-4 flex flex-col gap-3 rounded-xl border border-cyan-500/30 bg-cyan-500/5 p-3.5 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="text-xs font-semibold text-cyan-300">
@@ -361,10 +430,72 @@ function ResourcesRoute() {
                   Ranks nearest emergency shelters, hospitals, and stations by road distance.
                 </p>
               </div>
-              <Button size="sm" onClick={requestLocation} disabled={locStatus === "locating"}>
-                <Crosshair className="h-4 w-4" />
-                {locStatus === "locating" ? "Locating…" : "Use My GPS"}
+              <Button
+                size="sm"
+                onClick={() => requestLocation()}
+                disabled={locStatus === "acquiring-gps"}
+              >
+                <Crosshair
+                  className={`h-4 w-4 ${locStatus === "acquiring-gps" ? "animate-spin" : ""}`}
+                />
+                {locStatus === "acquiring-gps" ? "Acquiring GPS…" : "Use My GPS"}
               </Button>
+            </div>
+          ) : (
+            <div className="mb-4 flex items-center justify-between rounded-xl border border-emerald-500/30 bg-emerald-500/5 px-3.5 py-2 text-xs">
+              <div className="flex items-center gap-2 text-emerald-300 font-medium">
+                <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>
+                  High-Accuracy GPS Active
+                  {location.accuracyM !== null &&
+                    ` · Accuracy: ±${Math.round(location.accuracyM)} m`}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => requestLocation()}
+                className="text-[11px] font-semibold text-cyan-400 hover:underline"
+              >
+                Refresh GPS
+              </button>
+            </div>
+          )}
+
+          {/* Crisis Priority: Nearest Facilities across All Categories (Requirement #26) */}
+          {nearestByCategory.length > 0 && (
+            <div className="mb-4 rounded-xl border border-slate-800 bg-slate-950/80 p-3 shadow-md">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-300">
+                  Crisis Priority: Nearest Facilities
+                </span>
+                <span className="text-[10px] text-slate-500">Instant Routing</span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                {nearestByCategory.slice(0, 6).map(({ category, facility, distKm }) => (
+                  <button
+                    key={category.type}
+                    type="button"
+                    onClick={() => handleRouteHere(facility)}
+                    className={`flex flex-col items-start rounded-lg border p-2 text-left transition ${
+                      selectedFacility?.id === facility.id
+                        ? "border-cyan-500 bg-cyan-500/20"
+                        : "border-slate-800/80 bg-slate-900/60 hover:border-cyan-500/40 hover:bg-slate-900"
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5 w-full justify-between">
+                      <span className="text-[11px] font-semibold text-slate-200 truncate">
+                        {category.icon} {category.label}
+                      </span>
+                      <span className="text-[11px] font-bold font-mono text-cyan-400">
+                        {formatEmergencyDistance(distKm)}
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-slate-400 truncate w-full mt-0.5">
+                      {facility.name}
+                    </span>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
@@ -412,6 +543,7 @@ function ResourcesRoute() {
             activeRoute={activeRoute}
             userLocation={location ? { lat: location.lat, lng: location.lng } : null}
             accuracyM={location?.accuracyM ?? null}
+            onRequestLocation={getCurrentLocation}
             selectedMarkerId={selectedFacility?.id ?? null}
             onSelectMarker={(m) => {
               if (m) {

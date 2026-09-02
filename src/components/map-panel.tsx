@@ -205,9 +205,14 @@ const TILE_SOURCES: Record<
 
 // In-memory tile cache with bound to prevent memory leaks
 const TILE_CACHE = new Map<string, HTMLImageElement>();
-const MAX_CACHE_SIZE = 800;
+const FAILED_TILES = new Set<string>();
+const MAX_CACHE_SIZE = 1000;
 
 function getCachedTile(url: string, onLoaded?: () => void): HTMLImageElement | null {
+  if (FAILED_TILES.has(url)) {
+    return null;
+  }
+
   if (TILE_CACHE.has(url)) {
     const img = TILE_CACHE.get(url)!;
     if (img.complete && img.naturalWidth > 0) {
@@ -228,7 +233,8 @@ function getCachedTile(url: string, onLoaded?: () => void): HTMLImageElement | n
     if (onLoaded) onLoaded();
   };
   img.onerror = () => {
-    // Graceful silent error handling
+    FAILED_TILES.add(url);
+    if (onLoaded) onLoaded();
   };
   TILE_CACHE.set(url, img);
   return null;
@@ -267,6 +273,7 @@ export interface MapPanelProps {
   onSelectMarker?: (marker: MapMarker | null) => void;
   onMapClick?: (point: LatLng) => void;
   onRouteToMarker?: (marker: MapMarker) => void;
+  onRequestLocation?: () => Promise<unknown> | void;
   className?: string;
   pinMode?: boolean;
   pinLocation?: LatLng | null;
@@ -364,6 +371,7 @@ function OperationsMapInternal({
   onSelectMarker,
   onMapClick,
   onRouteToMarker,
+  onRequestLocation,
   className,
   pinMode = false,
   pinLocation = null,
@@ -477,8 +485,8 @@ function OperationsMapInternal({
     const { center, zoom } = viewportRef.current;
     const labelManager = new LabelCollisionManager();
 
-    // 1. Draw raster tiles (ESRI World Imagery or Carto Street)
-    const baseZ = Math.min(18, Math.max(2, Math.round(zoom)));
+    // 1. Draw raster tiles (ESRI World Imagery or Esri Street)
+    const baseZ = Math.min(19, Math.max(2, Math.round(zoom)));
     const scale = Math.pow(2, zoom - baseZ);
     const tileSource = TILE_SOURCES[basemap];
 
@@ -515,32 +523,37 @@ function OperationsMapInternal({
         if (tileImg) {
           ctx.drawImage(tileImg, screenTileX, screenTileY, renderTileSize, renderTileSize);
         } else {
-          // Ancestor tile fallback to eliminate blank flickering
-          const parentZ = baseZ - 1;
-          if (parentZ >= 2) {
-            const ptx = Math.floor(wrappedTx / 2);
-            const pty = Math.floor(ty / 2);
-            const parentUrl = tileSource.getUrl(ptx, pty, parentZ);
-            const parentImg = TILE_CACHE.get(parentUrl);
-            if (parentImg && parentImg.complete && parentImg.naturalWidth > 0) {
-              const subX = (wrappedTx % 2) * 128;
-              const subY = (ty % 2) * 128;
-              ctx.drawImage(
-                parentImg,
-                subX,
-                subY,
-                128,
-                128,
-                screenTileX,
-                screenTileY,
-                renderTileSize,
-                renderTileSize,
-              );
-            } else {
-              ctx.fillStyle = "#0c1524";
-              ctx.fillRect(screenTileX, screenTileY, renderTileSize, renderTileSize);
+          // Robust ancestor tile fallback (levels -1 and -2) to eliminate blank flickering
+          let drawn = false;
+          for (let pLevel = 1; pLevel <= 2; pLevel++) {
+            const parentZ = baseZ - pLevel;
+            if (parentZ >= 2) {
+              const factor = Math.pow(2, pLevel);
+              const ptx = Math.floor(wrappedTx / factor);
+              const pty = Math.floor(ty / factor);
+              const parentUrl = tileSource.getUrl(ptx, pty, parentZ);
+              const parentImg = TILE_CACHE.get(parentUrl);
+              if (parentImg && parentImg.complete && parentImg.naturalWidth > 0) {
+                const subSize = 256 / factor;
+                const subX = (wrappedTx % factor) * subSize;
+                const subY = (ty % factor) * subSize;
+                ctx.drawImage(
+                  parentImg,
+                  subX,
+                  subY,
+                  subSize,
+                  subSize,
+                  screenTileX,
+                  screenTileY,
+                  renderTileSize,
+                  renderTileSize,
+                );
+                drawn = true;
+                break;
+              }
             }
-          } else {
+          }
+          if (!drawn) {
             ctx.fillStyle = "#0c1524";
             ctx.fillRect(screenTileX, screenTileY, renderTileSize, renderTileSize);
           }
@@ -717,6 +730,36 @@ function OperationsMapInternal({
         ctx.strokeStyle = seg.roadType === "NATIONAL_HIGHWAY" ? "#fbbf24" : "#38bdf8";
         ctx.lineWidth = seg.roadType === "NATIONAL_HIGHWAY" ? 2.2 : 1.4;
         ctx.stroke();
+
+        // National Highway Shield Badge (NH 16, NH 44, NH 48, etc.)
+        if (seg.roadType === "NATIONAL_HIGHWAY" && zoom >= 7.5 && seg.path.length >= 2) {
+          const nhMatch = seg.roadName.match(/NH\s*\d+/i);
+          if (nhMatch) {
+            const shieldText = nhMatch[0].toUpperCase();
+            const midPt = seg.path[Math.floor(seg.path.length / 2)];
+            if (midPt) {
+              const ms = latLngToScreen(midPt.lat, midPt.lng, width, height);
+              if (ms.x > 30 && ms.x < width - 30 && ms.y > 20 && ms.y < height - 20) {
+                if (labelManager.canPlace(ms.x - 20, ms.y - 8, 40, 16)) {
+                  ctx.fillStyle = "rgba(15, 23, 42, 0.9)";
+                  ctx.beginPath();
+                  ctx.roundRect(ms.x - 18, ms.y - 7, 36, 14, 3);
+                  ctx.fill();
+                  ctx.strokeStyle = "#fbbf24";
+                  ctx.lineWidth = 1;
+                  ctx.stroke();
+
+                  ctx.font = "bold 8px system-ui, sans-serif";
+                  ctx.fillStyle = "#fbbf24";
+                  ctx.textAlign = "center";
+                  ctx.textBaseline = "middle";
+                  ctx.fillText(shieldText, ms.x, ms.y);
+                  labelManager.add(ms.x - 20, ms.y - 8, 40, 16);
+                }
+              }
+            }
+          }
+        }
       }
     }
 
@@ -885,26 +928,27 @@ function OperationsMapInternal({
       }
     }
 
-    // 9. Precise User Location Pulse
+    // 9. Precise User Location Pulse & True Accuracy Radius
     if (userLocation && isValidCoordinate(userLocation.lat, userLocation.lng)) {
       const s = latLngToScreen(userLocation.lat, userLocation.lng, width, height);
 
-      // Accuracy radius circle if available
+      // True Accuracy radius circle based on coords.accuracy
       if (accuracyM && accuracyM > 0) {
         const metersPerPixel =
           (156543.03392 * Math.cos((userLocation.lat * Math.PI) / 180)) / Math.pow(2, zoom);
-        const radiusPixels = Math.max(12, Math.min(250, accuracyM / metersPerPixel));
+        const radiusPixels = Math.max(8, accuracyM / metersPerPixel);
 
+        const isLowAccuracy = accuracyM > 100;
         ctx.beginPath();
         ctx.arc(s.x, s.y, radiusPixels, 0, Math.PI * 2);
-        ctx.fillStyle = "rgba(14, 165, 233, 0.15)";
+        ctx.fillStyle = isLowAccuracy ? "rgba(245, 158, 11, 0.12)" : "rgba(14, 165, 233, 0.15)";
         ctx.fill();
-        ctx.strokeStyle = "rgba(56, 189, 248, 0.4)";
-        ctx.lineWidth = 1;
+        ctx.strokeStyle = isLowAccuracy ? "rgba(245, 158, 11, 0.55)" : "rgba(56, 189, 248, 0.55)";
+        ctx.lineWidth = 1.2;
         ctx.stroke();
       }
 
-      // Outer pulse
+      // Outer pulse ring
       ctx.beginPath();
       ctx.arc(s.x, s.y, 14, 0, Math.PI * 2);
       ctx.fillStyle = "rgba(0, 245, 255, 0.25)";
@@ -912,7 +956,7 @@ function OperationsMapInternal({
 
       // Inner dot
       ctx.beginPath();
-      ctx.arc(s.x, s.y, 6, 0, Math.PI * 2);
+      ctx.arc(s.x, s.y, 6.5, 0, Math.PI * 2);
       ctx.fillStyle = "#00f5ff";
       ctx.fill();
       ctx.strokeStyle = "#ffffff";
@@ -926,6 +970,13 @@ function OperationsMapInternal({
       ctx.shadowColor = "rgba(0,0,0,0.9)";
       ctx.shadowBlur = 3;
       ctx.fillText("YOU", s.x, s.y - 12);
+
+      // Honest accuracy readout
+      if (accuracyM && accuracyM > 0) {
+        ctx.font = "600 8px system-ui, sans-serif";
+        ctx.fillStyle = accuracyM > 100 ? "#fbbf24" : "rgba(224, 242, 254, 0.9)";
+        ctx.fillText(`±${Math.round(accuracyM)} m`, s.x, s.y + 16);
+      }
       ctx.shadowBlur = 0;
     }
 
@@ -1186,7 +1237,7 @@ function OperationsMapInternal({
       const zoomFactor = dist / pinchStartDistRef.current;
       const newZoom = Math.max(
         5.0,
-        Math.min(18.5, pinchStartZoomRef.current + Math.log2(zoomFactor)),
+        Math.min(19.0, pinchStartZoomRef.current + Math.log2(zoomFactor)),
       );
       viewportRef.current.zoom = newZoom;
       renderMap();
@@ -1197,9 +1248,9 @@ function OperationsMapInternal({
     pinchStartDistRef.current = null;
   };
 
-  // UI Control actions - smooth deep zoom from Z5 to Z18.5
+  // UI Control actions - smooth deep zoom from Z5 to Z19.0 (Native House/Building level)
   const zoomIn = () => {
-    viewportRef.current.zoom = Math.min(18.5, viewportRef.current.zoom + 1.0);
+    viewportRef.current.zoom = Math.min(19.0, viewportRef.current.zoom + 1.0);
     renderMap();
   };
 
@@ -1216,11 +1267,18 @@ function OperationsMapInternal({
     renderMap();
   };
 
-  const locateUser = () => {
+  const locateUser = async () => {
+    if (onRequestLocation) {
+      try {
+        await onRequestLocation();
+      } catch (err) {
+        console.warn("Location request in map panel failed:", err);
+      }
+    }
     if (userLocation && isValidCoordinate(userLocation.lat, userLocation.lng)) {
       viewportRef.current = {
         center: { ...userLocation },
-        zoom: 13.0,
+        zoom: 17.0,
       };
       renderMap();
     }
@@ -1263,7 +1321,7 @@ function OperationsMapInternal({
         className="absolute inset-0 h-full w-full"
       />
 
-      {/* Top Bar: Clean mode indicator & Active route stats */}
+      {/* Top Bar: Clean mode indicator, GPS readout & Active route stats */}
       <div className="pointer-events-none absolute left-3 top-3 z-10 flex flex-wrap items-center gap-2">
         <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-slate-700/80 bg-slate-950/90 px-3 py-1.5 shadow-lg backdrop-blur-md">
           <div className="h-2 w-2 rounded-full bg-emerald-400" />
@@ -1272,6 +1330,18 @@ function OperationsMapInternal({
             India Scope
           </span>
         </div>
+
+        {userLocation && accuracyM !== null && (
+          <div className="pointer-events-auto flex items-center gap-1.5 rounded-lg border border-slate-700/80 bg-slate-950/90 px-2.5 py-1.5 text-xs text-slate-300 shadow-lg backdrop-blur-md">
+            <span
+              className={cn(
+                "h-2 w-2 rounded-full",
+                accuracyM > 100 ? "bg-amber-400 animate-pulse" : "bg-cyan-400",
+              )}
+            />
+            <span>Accuracy: ±{Math.round(accuracyM)} m</span>
+          </div>
+        )}
 
         {activeRoute && (
           <div className="pointer-events-auto flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-slate-950/90 px-3 py-1.5 shadow-lg backdrop-blur-md">
@@ -1311,16 +1381,19 @@ function OperationsMapInternal({
           <RotateCcw className="h-4 w-4" />
         </button>
 
-        {userLocation && (
-          <button
-            type="button"
-            onClick={locateUser}
-            title="My Location"
-            className="flex h-9 w-9 items-center justify-center rounded-lg border border-cyan-500/40 bg-cyan-500/10 text-cyan-300 shadow-md backdrop-blur-md transition hover:bg-cyan-500/25"
-          >
-            <Crosshair className="h-4 w-4" />
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={locateUser}
+          title="My Location (High-Accuracy GPS)"
+          className={cn(
+            "flex h-9 w-9 items-center justify-center rounded-lg border shadow-md backdrop-blur-md transition",
+            userLocation
+              ? "border-cyan-500/40 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/25"
+              : "border-slate-700/80 bg-slate-900/90 text-slate-400 hover:bg-slate-800 hover:text-cyan-300",
+          )}
+        >
+          <Crosshair className="h-4 w-4" />
+        </button>
 
         <button
           type="button"

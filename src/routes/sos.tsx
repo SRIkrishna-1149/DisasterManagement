@@ -305,8 +305,11 @@ function SosForm() {
             </div>
             {source === "GPS" && (
               <div className="mt-4 rounded-lg border border-border bg-surface/60 p-3">
-                {locationStatus === "locating" && (
-                  <p className="text-sm text-muted-foreground">Requesting a precise location…</p>
+                {(locationStatus === "requesting-permission" ||
+                  locationStatus === "acquiring-gps") && (
+                  <p className="text-sm text-muted-foreground">
+                    Requesting high-accuracy GPS location…
+                  </p>
                 )}
                 {locationStatus === "denied" && (
                   <p className="text-sm text-accent">
@@ -318,7 +321,7 @@ function SosForm() {
                 )}
                 {locationStatus === "outside-region" && (
                   <p className="text-sm text-accent">
-                    GPS is outside the Andhra Pradesh operating area. Use a manual pin or landmark.
+                    GPS is outside the India operating area. Use a manual pin or landmark.
                   </p>
                 )}
                 {location && (

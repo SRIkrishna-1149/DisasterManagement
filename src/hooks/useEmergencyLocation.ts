@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { isInsideAndhraPradesh, type LocationSource } from "@/lib/domain";
+import { isInsideIndia, type LocationSource } from "@/lib/domain";
 import { isValidCoordinate } from "@/lib/geo";
 
 export interface EmergencyLocation {
@@ -14,45 +14,75 @@ export interface EmergencyLocation {
 }
 
 export type LocationStatus =
-  "idle" | "locating" | "ready" | "denied" | "unavailable" | "outside-region" | "timeout";
+  | "idle"
+  | "requesting-permission"
+  | "acquiring-gps"
+  | "location-acquired"
+  | "accuracy-validation"
+  | "ready"
+  | "denied"
+  | "unavailable"
+  | "outside-region"
+  | "timeout"
+  | "low-accuracy";
 
 export function useEmergencyLocation(autoRequest = true) {
   const [location, setLocation] = useState<EmergencyLocation | null>(null);
   const [status, setStatus] = useState<LocationStatus>("idle");
   const [isWatching, setIsWatching] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [accuracyWarning, setAccuracyWarning] = useState<string | null>(null);
   const watchIdRef = useRef<number | null>(null);
 
   const handlePosition = useCallback((position: GeolocationPosition): EmergencyLocation | null => {
+    setStatus("location-acquired");
     const { latitude, longitude, accuracy, heading, speed } = position.coords;
+
     if (!isValidCoordinate(latitude, longitude)) {
       setStatus("unavailable");
       setErrorMessage("Received invalid GPS coordinates from device.");
       return null;
     }
 
+    setStatus("accuracy-validation");
+
+    const acc = Number.isFinite(accuracy) ? accuracy : null;
+    let warn: string | null = null;
+    if (acc !== null) {
+      if (acc > 500) {
+        warn = `Location accuracy is currently low (±${Math.round(acc)} m). Move outdoors or enable device GPS.`;
+      } else if (acc > 100) {
+        warn = `Location accuracy is moderate (±${Math.round(acc)} m). Proximity sorting is approximate.`;
+      }
+    }
+    setAccuracyWarning(warn);
+
     const loc: EmergencyLocation = {
       lat: latitude,
       lng: longitude,
       source: "GPS",
-      accuracyM: Number.isFinite(accuracy) ? accuracy : null,
+      accuracyM: acc,
       heading: Number.isFinite(heading) ? heading : null,
       speed: Number.isFinite(speed) ? speed : null,
       landmark: null,
       capturedAt: new Date().toISOString(),
     };
 
-    if (!isInsideAndhraPradesh(latitude, longitude)) {
+    if (!isInsideIndia(latitude, longitude)) {
       setStatus("outside-region");
       setErrorMessage(
-        "Your current location is outside the Andhra Pradesh disaster-management coverage area.",
+        "Your current location is outside the India disaster-management operating area.",
       );
       setLocation(loc);
       return loc;
     }
 
     setLocation(loc);
-    setStatus("ready");
+    if (acc !== null && acc > 500) {
+      setStatus("low-accuracy");
+    } else {
+      setStatus("ready");
+    }
     setErrorMessage(null);
     return loc;
   }, []);
@@ -65,40 +95,41 @@ export function useEmergencyLocation(autoRequest = true) {
       );
     } else if (error.code === error.TIMEOUT) {
       setStatus("timeout");
-      setErrorMessage("Location request timed out. Please check your GPS signal and retry.");
+      setErrorMessage("GPS location request timed out. Please check your device signal and retry.");
     } else {
       setStatus("unavailable");
       setErrorMessage("Device location service is temporarily unavailable.");
     }
   }, []);
 
-  const request = useCallback(() => {
-    if (typeof navigator === "undefined" || !navigator.geolocation) {
-      setStatus("unavailable");
-      setErrorMessage("Geolocation is not supported by your browser or device.");
-      return;
-    }
-    setStatus("locating");
-    setErrorMessage(null);
+  const request = useCallback(
+    (forceFresh = false) => {
+      if (typeof navigator === "undefined" || !navigator.geolocation) {
+        setStatus("unavailable");
+        setErrorMessage("Geolocation is not supported by your browser or device.");
+        return;
+      }
+      setStatus("requesting-permission");
+      setErrorMessage(null);
 
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        handlePosition(pos);
-      },
-      handleError,
-      {
-        enableHighAccuracy: true,
-        timeout: 15000,
-        maximumAge: 10000,
-      },
-    );
-  }, [handlePosition, handleError]);
+      setStatus("acquiring-gps");
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          handlePosition(pos);
+        },
+        handleError,
+        {
+          enableHighAccuracy: true,
+          timeout: 15000,
+          maximumAge: forceFresh ? 0 : 5000,
+        },
+      );
+    },
+    [handlePosition, handleError],
+  );
 
-  /**
-   * Directly request and await the user's fresh GPS coordinates with a guaranteed promise exit.
-   */
   const getCurrentLocation = useCallback(
-    (timeoutMs = 12000): Promise<EmergencyLocation> => {
+    (timeoutMs = 15000): Promise<EmergencyLocation> => {
       return new Promise((resolve, reject) => {
         if (typeof navigator === "undefined" || !navigator.geolocation) {
           const msg = "Geolocation is not supported by your browser or device.";
@@ -108,7 +139,7 @@ export function useEmergencyLocation(autoRequest = true) {
           return;
         }
 
-        setStatus("locating");
+        setStatus("acquiring-gps");
         setErrorMessage(null);
 
         navigator.geolocation.getCurrentPosition(
@@ -125,11 +156,11 @@ export function useEmergencyLocation(autoRequest = true) {
             if (err.code === err.PERMISSION_DENIED) {
               reject(
                 new Error(
-                  "Location permission denied. Please allow location access in your device settings to calculate routes.",
+                  "Location permission denied. Please allow location access in your device settings.",
                 ),
               );
             } else if (err.code === err.TIMEOUT) {
-              reject(new Error("GPS location request timed out. Please check your signal."));
+              reject(new Error("GPS location request timed out. Move outdoors and retry."));
             } else {
               reject(new Error("Unable to obtain GPS location from device."));
             }
@@ -137,7 +168,7 @@ export function useEmergencyLocation(autoRequest = true) {
           {
             enableHighAccuracy: true,
             timeout: timeoutMs,
-            maximumAge: 5000,
+            maximumAge: 0,
           },
         );
       });
@@ -152,7 +183,7 @@ export function useEmergencyLocation(autoRequest = true) {
     }
     if (watchIdRef.current !== null) return;
 
-    setStatus("locating");
+    setStatus("acquiring-gps");
     setIsWatching(true);
 
     const id = navigator.geolocation.watchPosition(
@@ -163,7 +194,7 @@ export function useEmergencyLocation(autoRequest = true) {
       {
         enableHighAccuracy: true,
         timeout: 15000,
-        maximumAge: 5000,
+        maximumAge: 3000,
       },
     );
     watchIdRef.current = id;
@@ -179,7 +210,7 @@ export function useEmergencyLocation(autoRequest = true) {
 
   useEffect(() => {
     if (autoRequest) {
-      request();
+      request(false);
     }
     return () => {
       stopWatching();
@@ -198,8 +229,9 @@ export function useEmergencyLocation(autoRequest = true) {
         landmark,
         capturedAt: new Date().toISOString(),
       });
-      setStatus(isInsideAndhraPradesh(lat, lng) ? "ready" : "outside-region");
+      setStatus(isInsideIndia(lat, lng) ? "ready" : "outside-region");
       setErrorMessage(null);
+      setAccuracyWarning(null);
     },
     [],
   );
@@ -208,8 +240,9 @@ export function useEmergencyLocation(autoRequest = true) {
     location,
     status,
     errorMessage,
+    accuracyWarning,
     isWatching,
-    request,
+    request: () => request(true),
     getCurrentLocation,
     startWatching,
     stopWatching,

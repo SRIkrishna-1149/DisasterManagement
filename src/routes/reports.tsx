@@ -46,7 +46,7 @@ function ReportsRoute() {
 
 function ReportForm() {
   const { user, isOperator } = useAuth();
-  const { location, request } = useEmergencyLocation();
+  const { location, status: locStatus, accuracyWarning, request } = useEmergencyLocation();
   const client = useQueryClient();
   const [reportType, setReportType] = useState<string>(REPORT_TYPES[0]);
   const [severity, setSeverity] = useState<Severity>("MEDIUM");
@@ -238,21 +238,39 @@ function ReportForm() {
                   placeholder="Describe what is happening and when you observed it…"
                 />
               </Field>
-              {location ? (
-                <div className="flex items-center justify-between rounded-lg border border-primary/25 bg-primary/5 p-3 text-xs text-muted-foreground">
-                  <div className="flex items-center gap-2">
-                    <MapPin className="h-4 w-4 text-primary" />
-                    <span>
-                      Location attached: {location.lat.toFixed(4)}, {location.lng.toFixed(4)}
-                    </span>
+              {accuracyWarning && (
+                <p className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-xs text-amber-300">
+                  {accuracyWarning}
+                </p>
+              )}
+              {location && location.lat !== 0 ? (
+                <div className="flex flex-col gap-2 rounded-lg border border-primary/25 bg-primary/5 p-3 text-xs text-muted-foreground">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 font-medium text-foreground">
+                      <MapPin className="h-4 w-4 text-primary" />
+                      <span>
+                        GPS: {location.lat.toFixed(6)}, {location.lng.toFixed(6)}
+                      </span>
+                    </div>
+                    {location.accuracyM !== null && (
+                      <span className="font-mono text-[11px] text-cyan-400">
+                        Accuracy: ±{Math.round(location.accuracyM)} m
+                      </span>
+                    )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={request}
-                    className="text-[11px] font-semibold text-primary underline hover:text-primary/80"
-                  >
-                    Update GPS
-                  </button>
+                  <div className="flex items-center justify-between border-t border-primary/10 pt-1 text-[11px]">
+                    <span className="text-muted-foreground">Coordinates verified within India</span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={request}
+                        disabled={locStatus === "acquiring-gps"}
+                        className="font-semibold text-primary underline hover:text-primary/80"
+                      >
+                        {locStatus === "acquiring-gps" ? "Acquiring…" : "Update GPS"}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               ) : (
                 <div className="flex items-center justify-between rounded-lg border border-border bg-muted/30 p-3 text-xs text-muted-foreground">
@@ -260,9 +278,15 @@ function ReportForm() {
                     <MapPin className="h-4 w-4 text-muted-foreground" />
                     No location attached (optional)
                   </span>
-                  <Button type="button" size="sm" variant="outline" onClick={request}>
-                    <MapPin className="h-3.5 w-3.5 mr-1" />
-                    Attach My Location
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={request}
+                    disabled={locStatus === "acquiring-gps"}
+                  >
+                    <MapPin className="mr-1 h-3.5 w-3.5" />
+                    {locStatus === "acquiring-gps" ? "Acquiring GPS…" : "Attach My Location"}
                   </Button>
                 </div>
               )}
